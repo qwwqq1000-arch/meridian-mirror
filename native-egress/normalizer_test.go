@@ -54,6 +54,28 @@ func TestNormalizerStripsUnsupportedToolAndForcesModelFields(t *testing.T) {
 	}
 }
 
+func TestUserSystemFoldedIntoFirstUserMessage(t *testing.T) {
+	user := []byte(`{"model":"claude-sonnet-4-6","system":"AGENT INSTRUCTIONS","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	out, err := MergeUserRequest(user, baseTmpl(), `{"device_id":"d","account_uuid":"a","session_id":"s"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b map[string]any
+	json.Unmarshal(out, &b)
+
+	// System must stay exactly the template's block count (not increased by user system).
+	if got, want := len(b["system"].([]any)), len(baseTmpl().System); got != want {
+		t.Fatalf("system block count changed by user system: got %d, want %d", got, want)
+	}
+	msgs := b["messages"].([]any)
+	first := msgs[0].(map[string]any)
+	content := first["content"].([]any)
+	block0 := content[0].(map[string]any)
+	if !strings.Contains(block0["text"].(string), "AGENT INSTRUCTIONS") {
+		t.Fatalf("agent instructions not folded into first user message: %v", block0)
+	}
+}
+
 func TestMarshalBodyKeyOrder(t *testing.T) {
 	out, _ := MergeUserRequest(
 		[]byte(`{"model":"claude-sonnet-4-6","messages":[]}`), baseTmpl(),

@@ -172,8 +172,13 @@ func MergeUserRequest(userBody []byte, tmpl *BodyTemplate, userID string) ([]byt
 
 	// ③ user passthrough (only these)
 	result["model"] = user["model"]
-	result["messages"] = stripEmptyTextBlocks(user["messages"])
-	stripEmptyImageBlocks(result["messages"])
+	msgs := stripEmptyTextBlocks(user["messages"])
+	// Real CC never adds extra system blocks; a non-CC agent's system prompt is
+	// folded into the conversation (CLAUDE.md-style) so its instructions still
+	// reach the model while the system stays exactly the 3 CC blocks.
+	msgs = foldUserSystemIntoMessages(msgs, user["system"])
+	stripEmptyImageBlocks(msgs)
+	result["messages"] = msgs
 	sanitizeToolChoice(user)
 	if tc, ok := user["tool_choice"]; ok {
 		result["tool_choice"] = tc
@@ -279,6 +284,53 @@ func marshalNoEscape(v any) ([]byte, error) {
 		b = b[:len(b)-1]
 	}
 	return b, nil
+}
+
+// foldUserSystemIntoMessages moves a non-CC agent's system prompt into the
+// conversation (like real CC carries CLAUDE.md-style instructions) instead of
+// adding extra system blocks. It prepends the collapsed user system text as a
+// text block to the first user message, so the system stays exactly the CC
+// template's blocks while the agent's instructions still reach the model.
+func foldUserSystemIntoMessages(msgs any, userSys any) any {
+	blocks := mergeUserSystem(userSys)
+	if len(blocks) == 0 {
+		return msgs
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		if m, ok := b.(map[string]any); ok {
+			if t, ok := m["text"].(string); ok && t != "" {
+				parts = append(parts, t)
+			}
+		}
+	}
+	text := strings.Join(parts, "\n\n")
+	if text == "" {
+		return msgs
+	}
+	sysBlock := map[string]any{"type": "text", "text": text}
+
+	arr, ok := msgs.([]any)
+	if !ok || len(arr) == 0 {
+		return []any{map[string]any{"role": "user", "content": []any{sysBlock}}}
+	}
+	for _, m := range arr {
+		mm, ok := m.(map[string]any)
+		if !ok || mm["role"] != "user" {
+			continue
+		}
+		switch content := mm["content"].(type) {
+		case []any:
+			mm["content"] = append([]any{sysBlock}, content...)
+		case string:
+			mm["content"] = []any{sysBlock, map[string]any{"type": "text", "text": content}}
+		default:
+			mm["content"] = []any{sysBlock}
+		}
+		return arr
+	}
+	// No user message present: prepend a new one carrying the folded system.
+	return append([]any{map[string]any{"role": "user", "content": []any{sysBlock}}}, arr...)
 }
 
 // mergeUserSystem converts the user's "system" field (string or block array)
