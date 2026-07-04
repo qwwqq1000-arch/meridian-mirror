@@ -427,11 +427,21 @@ func sanitizeToolChoiceBytes(raw json.RawMessage) []byte {
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
 		switch s {
-		case "auto", "any", "none":
+		case "auto":
+			return nil // real CC omits tool_choice; "auto" is the implicit default
+		case "any", "none":
 			return []byte(`{"type":"` + s + `"}`)
 		default:
 			return append(append([]byte(`{"type":"tool","name":`), jsonStringBytes(s)...), '}')
 		}
+	}
+	// Object form: omit the default {"type":"auto"} — real CC never sends
+	// tool_choice for the auto case (verified absent in captures that carry tools).
+	var obj struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &obj) == nil && obj.Type == "auto" {
+		return nil
 	}
 	return raw
 }
