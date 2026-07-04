@@ -54,16 +54,18 @@ func (c *BodyTemplateCache) Get() *BodyTemplate {
 
 // LearnFromCC extracts a body template from a genuine Claude Code request body.
 // Called on every CC-shaped request that passes through relay.
-func (c *BodyTemplateCache) LearnFromCC(rawBody []byte, fpVersion, fpBetas, fpNodeVer string) {
+// Returns true only if the template was actually stored (false if the identity
+// isn't recognized, so callers don't log a misleading "learned").
+func (c *BodyTemplateCache) LearnFromCC(rawBody []byte, fpVersion, fpBetas, fpNodeVer string) bool {
 	if c == nil {
-		return
+		return false
 	}
 	var body map[string]any
 	if json.Unmarshal(rawBody, &body) != nil {
-		return
+		return false
 	}
 	if !hasClaudeIdentity(body["system"]) {
-		return
+		return false
 	}
 
 	tmpl := &BodyTemplate{
@@ -111,6 +113,7 @@ func (c *BodyTemplateCache) LearnFromCC(rawBody []byte, fpVersion, fpBetas, fpNo
 	c.mu.Unlock()
 	logDD("body template learned: system=%d blocks, tools=%d, version=%s",
 		len(tmpl.System), len(tmpl.Tools), tmpl.Version)
+	return true
 }
 
 // MergeUserRequest reconciles a user's request against the captured CC template

@@ -78,8 +78,11 @@ func warmupTemplate(claudePath, configDir string, fpCache *FPCache, btCache *Bod
 		warmupLog("warmup: body capture empty — using builtin body template")
 		return true
 	}
-	btCache.LearnFromCC(bodyData, fpVersion, fp["anthropic-beta"], fp["x-stainless-runtime-version"])
-	warmupLog("warmup: body template learned (%d bytes)", len(bodyData))
+	if btCache.LearnFromCC(bodyData, fpVersion, fp["anthropic-beta"], fp["x-stainless-runtime-version"]) {
+		warmupLog("warmup: body template learned (%d bytes)", len(bodyData))
+	} else {
+		warmupLog("warmup: body NOT stored — CC identity not recognized (%d bytes) — using builtin body", len(bodyData))
+	}
 	return true
 }
 

@@ -43,6 +43,12 @@ func marshalBody(body map[string]any) ([]byte, error) {
 const ClaudeCodeIdentity = "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK."
 const ccIdentityPrefix = "You are Claude Code, Anthropic's official CLI for Claude"
 
+// agentSDKIdentityPrefix is the identity the headless SDK path (`claude -p`) emits
+// — real CC 2.1.198 sends this, NOT the "You are Claude Code…" line. Verified from
+// golden captures. LearnFromCC must accept it or it rejects the real 2.1.198 body
+// and silently falls back to the stale builtin template.
+const agentSDKIdentityPrefix = "You are a Claude agent, built on Anthropic's Claude Agent SDK"
+
 // deriveUserID builds metadata.user_id exactly like real CC:
 // {"device_id":<stable per-machine sha256>,"account_uuid":<real uuid>,"session_id":<session>}.
 // Verified against 20 golden captures: real CC uses the real account uuid, a
@@ -347,14 +353,19 @@ func ensureCacheControl(body map[string]any) {
 // Code identity (in any text block, or as a plain string). Genuine CC may put it
 // in a non-first block (recent CLI prepends an `x-anthropic-billing-header`
 // block), so we scan all blocks and match the version-stable prefix.
+func matchesClaudeIdentity(text string) bool {
+	t := strings.TrimLeft(text, " \t\r\n")
+	return strings.HasPrefix(t, ccIdentityPrefix) || strings.HasPrefix(t, agentSDKIdentityPrefix)
+}
+
 func hasClaudeIdentity(sys any) bool {
 	switch v := sys.(type) {
 	case string:
-		return strings.HasPrefix(strings.TrimLeft(v, " \t\r\n"), ccIdentityPrefix)
+		return matchesClaudeIdentity(v)
 	case []any:
 		for _, item := range v {
 			if b, ok := item.(map[string]any); ok {
-				if text, ok := b["text"].(string); ok && strings.HasPrefix(strings.TrimLeft(text, " \t\r\n"), ccIdentityPrefix) {
+				if text, ok := b["text"].(string); ok && matchesClaudeIdentity(text) {
 					return true
 				}
 			}
