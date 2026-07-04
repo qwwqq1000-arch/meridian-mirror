@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,13 @@ type BodyTemplate struct {
 	Betas             string `json:"-"`
 	NodeVersion       string `json:"-"`
 	BuildTime         string `json:"-"`
+
+	// Raw captured bytes, spliced verbatim into the outgoing request so nested
+	// key order matches real CC byte-for-byte (json.Marshal on a map sorts keys;
+	// real CC/node uses insertion order).
+	SystemRaw            json.RawMessage `json:"-"`
+	ToolsRaw             json.RawMessage `json:"-"`
+	ContextManagementRaw json.RawMessage `json:"-"`
 }
 
 type BodyTemplateCache struct {
@@ -107,6 +115,15 @@ func (c *BodyTemplateCache) LearnFromCC(rawBody []byte, fpVersion, fpBetas, fpNo
 		tmpl.NodeVersion = fpNodeVer
 	}
 
+	// Preserve the raw bytes of splice-verbatim fields so their nested key order
+	// matches real CC exactly (parsing into map[string]any + re-marshal sorts keys).
+	var rawFields map[string]json.RawMessage
+	if json.Unmarshal(rawBody, &rawFields) == nil {
+		tmpl.SystemRaw = rawFields["system"]
+		tmpl.ToolsRaw = rawFields["tools"]
+		tmpl.ContextManagementRaw = rawFields["context_management"]
+	}
+
 	c.mu.Lock()
 	c.tmpl = tmpl
 	c.capturedAt = time.Now()
@@ -123,76 +140,78 @@ func (c *BodyTemplateCache) LearnFromCC(rawBody []byte, fpVersion, fpBetas, fpNo
 // CC-recognized user tools, non-CC top-level fields stripped, and a fixed CC key
 // order. Values verified against 20 golden captures. No cc_prev_req.
 func MergeUserRequest(userBody []byte, tmpl *BodyTemplate, userID string) ([]byte, error) {
-	var user map[string]any
+	// Decode only the top level into raw fields so every pass-through value keeps
+	// its original bytes (and thus real CC / client insertion-order keys).
+	var user map[string]json.RawMessage
 	if err := json.Unmarshal(userBody, &user); err != nil {
 		return nil, err
 	}
-	model, _ := user["model"].(string)
-	result := make(map[string]any, 12)
-
-	// ① template-fixed (from the capture)
-	result["system"] = append([]any{}, tmpl.System...)
-	result["metadata"] = map[string]any{"user_id": userID}
-	if tmpl.ContextManagement != nil {
-		result["context_management"] = tmpl.ContextManagement
+	var model string
+	if len(user["model"]) > 0 {
+		json.Unmarshal(user["model"], &model)
 	}
 
-	// ④ tools: base set always; append only CC-recognized user tools (deduped)
-	baseNames := map[string]bool{}
-	merged := append([]any{}, tmpl.Tools...)
-	for _, tl := range tmpl.Tools {
-		if tm, ok := tl.(map[string]any); ok {
-			if n, ok := tm["name"].(string); ok {
-				baseNames[n] = true
-			}
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	first := true
+	emit := func(key string, val []byte) {
+		if val == nil {
+			return
+		}
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+		buf.WriteByte('"')
+		buf.WriteString(key)
+		buf.WriteString(`":`)
+		buf.Write(val)
+	}
+
+	// ③ user passthrough — model verbatim
+	modelVal := user["model"]
+	if len(modelVal) == 0 {
+		modelVal = []byte(`""`)
+	}
+	emit("model", modelVal)
+
+	// ③ messages — order-preserving (assistant byte-identical, user cleaned, system folded)
+	msgsVal, err := processMessagesOrdered(user["messages"], foldTextFrom(user["system"]))
+	if err != nil {
+		return nil, err
+	}
+	emit("messages", msgsVal)
+
+	// ① template-fixed (spliced from the capture, byte-perfect key order)
+	emit("system", buildSystemBytes(tmpl))
+	// ④ tools: base set + only CC-recognized user tools
+	emit("tools", buildToolsBytes(tmpl, user["tools"]))
+	// ① metadata.user_id
+	meta := append([]byte(`{"user_id":`), jsonStringBytes(userID)...)
+	meta = append(meta, '}')
+	emit("metadata", meta)
+
+	// ② model-derived (forced, exact real-CC key order)
+	emit("max_tokens", []byte(strconv.Itoa(modelMaxTokens(model))))
+	emit("thinking", modelThinkingBytes(model))
+	emit("context_management", buildContextManagementBytes(tmpl))
+	emit("output_config", modelOutputConfigBytes(model))
+
+	// ③ stream — default true, honor user's explicit false
+	streamVal := []byte("true")
+	if len(user["stream"]) > 0 {
+		var s bool
+		if json.Unmarshal(user["stream"], &s) == nil && !s {
+			streamVal = []byte("false")
 		}
 	}
-	if userTools, ok := user["tools"].([]any); ok {
-		for _, tl := range userTools {
-			tm, ok := tl.(map[string]any)
-			if !ok {
-				continue
-			}
-			n, _ := tm["name"].(string)
-			if n == "" || baseNames[n] || !isCCRecognizedTool(n, baseNames) {
-				continue // dedup base, drop non-CC
-			}
-			delete(tm, "cache_control")
-			merged = append(merged, tl)
-			baseNames[n] = true
-		}
-	}
-	if len(merged) > 0 {
-		result["tools"] = merged
-	}
+	emit("stream", streamVal)
 
-	// ② model-derived (forced)
-	result["max_tokens"] = modelMaxTokens(model)
-	result["thinking"] = modelThinking(model)
-	if oc := modelOutputConfig(model); oc != nil {
-		result["output_config"] = oc
-	}
+	// ③ tool_choice (real CC omits it; opencode may send it) — string→object
+	emit("tool_choice", sanitizeToolChoiceBytes(user["tool_choice"]))
 
-	// ③ user passthrough (only these)
-	result["model"] = user["model"]
-	msgs := stripEmptyTextBlocks(user["messages"])
-	// Real CC never adds extra system blocks; a non-CC agent's system prompt is
-	// folded into the conversation (CLAUDE.md-style) so its instructions still
-	// reach the model while the system stays exactly the 3 CC blocks.
-	msgs = foldUserSystemIntoMessages(msgs, user["system"])
-	stripEmptyImageBlocks(msgs)
-	result["messages"] = msgs
-	sanitizeToolChoice(user)
-	if tc, ok := user["tool_choice"]; ok {
-		result["tool_choice"] = tc
-	}
-	result["stream"] = true
-	if s, ok := user["stream"].(bool); ok {
-		result["stream"] = s
-	}
-
-	ensureCacheControl(result)
-	return marshalBodyOrdered(result)
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
 }
 
 func modelMaxTokens(model string) int {
