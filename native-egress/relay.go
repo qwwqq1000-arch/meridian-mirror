@@ -86,7 +86,11 @@ func relayHandler(d RelayDeps) http.HandlerFunc {
 		defer resp.Body.Close()
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+			// Decompress the error body: we advertise gzip/br/zstd, so Anthropic
+			// compresses error responses too. Reading resp.Body raw would forward
+			// gzip bytes as application/json (garbled to the client) AND break the
+			// signature check below (bytes.Contains can't match inside gzip).
+			errBody, _ := io.ReadAll(io.LimitReader(decodedBody(resp), 8192))
 			logUpstreamError(resp.StatusCode, errBody)
 
 			// Auto-retry on expired thinking signature: strip thinking blocks and resend.
@@ -106,7 +110,7 @@ func relayHandler(d RelayDeps) http.HandlerFunc {
 								resp = resp2
 								goto handleSuccess
 							}
-							errBody, _ = io.ReadAll(io.LimitReader(resp2.Body, 8192))
+							errBody, _ = io.ReadAll(io.LimitReader(decodedBody(resp2), 8192))
 							logUpstreamError(resp2.StatusCode, errBody)
 							w.Header().Set("Content-Type", "application/json")
 							w.WriteHeader(resp2.StatusCode)
