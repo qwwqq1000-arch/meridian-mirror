@@ -171,7 +171,7 @@ func processUserMessage(msg json.RawMessage, foldText string) json.RawMessage {
 	}
 
 	if foldText == "" && !stripped {
-		return msg // byte-identical: preserves the client's exact order
+		return emitRoleFirst(msg) // content bytes intact, wrapper normalized to role-first
 	}
 
 	var newBlocks []json.RawMessage
@@ -204,10 +204,50 @@ func processUserMessage(msg json.RawMessage, foldText string) json.RawMessage {
 	return buf.Bytes()
 }
 
+// emitRoleFirst normalizes a message wrapper to real CC's {"role":...,"content":...}
+// order while keeping the role/content VALUE bytes byte-identical. Real CC always
+// emits role before content; opencode may send content,role. Reordering the wrapper
+// is safe for thinking signatures because the content array bytes are untouched.
+func emitRoleFirst(msg json.RawMessage) json.RawMessage {
+	kvs, ok := parseOrderedObject(msg)
+	if !ok {
+		return msg
+	}
+	var roleRaw, contentRaw json.RawMessage
+	var extra []orderedKV
+	for _, p := range kvs {
+		switch p.key {
+		case "role":
+			roleRaw = p.val
+		case "content":
+			contentRaw = p.val
+		default:
+			extra = append(extra, p)
+		}
+	}
+	if len(roleRaw) == 0 || len(contentRaw) == 0 {
+		return msg // not a normal message — leave untouched
+	}
+	var buf bytes.Buffer
+	buf.WriteString(`{"role":`)
+	buf.Write(roleRaw)
+	buf.WriteString(`,"content":`)
+	buf.Write(contentRaw)
+	for _, p := range extra {
+		buf.WriteByte(',')
+		kb, _ := marshalNoEscape(p.key)
+		buf.Write(kb)
+		buf.WriteByte(':')
+		buf.Write(p.val)
+	}
+	buf.WriteByte('}')
+	return buf.Bytes()
+}
+
 // processMessagesOrdered rebuilds the messages array preserving byte order.
-// Assistant turns are emitted byte-identical (thinking-signature safety); user
-// turns are cleaned of empty blocks and the folded system text is prepended to
-// the first user message.
+// Assistant turns keep their content bytes (thinking-signature safety) with the
+// wrapper normalized to role-first; user turns are cleaned of empty blocks and the
+// folded system text is prepended to the first user message.
 func processMessagesOrdered(rawMsgs json.RawMessage, foldText string) ([]byte, error) {
 	var msgs []json.RawMessage
 	if len(rawMsgs) > 0 {
@@ -219,7 +259,7 @@ func processMessagesOrdered(rawMsgs json.RawMessage, foldText string) ([]byte, e
 	folded := false
 	for _, msg := range msgs {
 		if peekRole(msg) == "assistant" {
-			out = append(out, msg) // byte-identical — preserves thinking signatures
+			out = append(out, emitRoleFirst(msg)) // content bytes intact, wrapper role-first
 			continue
 		}
 		ft := ""
