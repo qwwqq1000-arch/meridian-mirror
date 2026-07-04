@@ -31,6 +31,10 @@ func relayHandler(d RelayDeps) http.HandlerFunc {
 		account := r.Header.Get("X-Native-Account")
 		stream := r.Header.Get("X-Native-Stream") == "1"
 		clientBeta := r.Header.Get("X-Native-Anthropic-Beta")
+		// One session id per conversation, used for BOTH the header and metadata
+		// (real CC keeps them equal and rotates per conversation).
+		convKey := r.Header.Get("X-Native-Session-Key")
+		sessionID := conversationSessionID(account, convKey)
 
 		token, _, _, err := ReadToken(configDir)
 		if err != nil || token == "" {
@@ -50,7 +54,7 @@ func relayHandler(d RelayDeps) http.HandlerFunc {
 		if t := d.BodyTemplate.Get(); t != nil {
 			tmpl = t
 		}
-		cloaked, err = MergeUserRequest(rawBody, tmpl, deriveUserID(account, configDir, d.SessionID(account)))
+		cloaked, err = MergeUserRequest(rawBody, tmpl, deriveUserID(account, configDir, sessionID))
 		if err != nil {
 			degrade(w, "merge_error")
 			return
@@ -62,7 +66,6 @@ func relayHandler(d RelayDeps) http.HandlerFunc {
 		}
 
 		// Always stream from upstream — NE assembles to JSON for non-stream clients.
-		sessionID := d.SessionID(account)
 		headers := BuildHeaders(fp, token, sessionID, true, clientBeta)
 
 		upReq, err := http.NewRequestWithContext(r.Context(), "POST", "https://api.anthropic.com/v1/messages?beta=true", bytesReader(cloaked))

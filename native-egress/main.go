@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"flag"
 	"fmt"
 	"net/http"
@@ -10,6 +11,19 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// conversationSessionID returns a stable RFC-4122-shaped id per (account,
+// conversation). Real CC keeps one session id per conversation and rotates it
+// across conversations (verified: 10 distinct sessions across 20 golden
+// requests); we mirror that instead of one constant per account. The same id is
+// used for both the x-claude-code-session-id header and metadata.session_id.
+func conversationSessionID(account, convKey string) string {
+	if convKey == "" {
+		convKey = "default"
+	}
+	h := sha256.Sum256([]byte("meridian-session:" + account + ":" + convKey))
+	return fmt.Sprintf("%x-%x-%x-%x-%x", h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
+}
 
 // sessionStore provides stable per-account session IDs (generated once, reused).
 var sessionStore = struct {
