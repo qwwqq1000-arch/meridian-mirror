@@ -87,12 +87,28 @@ var builtinFP = Fingerprint{
 
 func (c *FPCache) Get(account, configDir string, now time.Time) (Fingerprint, bool) {
 	c.mu.Lock()
-	if e, ok := c.entries[account]; ok && now.Sub(e.capturedAt) <= c.ttl {
-		c.mu.Unlock()
+	e, ok := c.entries[account]
+	c.mu.Unlock()
+	if ok {
+		// Always reuse the cached fingerprint — NEVER re-capture on the request
+		// path. Warmup captures the real live fp once at startup. Re-running the
+		// CLI here after the TTL would (a) BLOCK the request for multiple seconds
+		// (the "requests hang" symptom), (b) stall native-egress so Node's fetch
+		// to it times out (relay=degrade:fetch failed), and (c) on capture failure
+		// (rate-limit/timeout) fall back to the stale hard-coded builtinFP — a
+		// 2.1.187 fingerprint that carries x-client-request-id and omits the
+		// x-stainless-* headers, so the outbound request stops matching real
+		// 2.1.198 (the "extra/missing headers" symptom). A slightly-aged real
+		// 2.1.198 fp beats all three. The pinned CLI version is identical across
+		// restarts, so staleness is moot; POST /warmup refreshes it explicitly.
+		if now.Sub(e.capturedAt) > c.ttl {
+			logDD("fingerprint past ttl — reused (no request-path recapture)")
+		}
 		return e.fp, true
 	}
-	c.mu.Unlock()
 
+	// Cold start only (a request arrived before warmup populated the cache):
+	// capture once so the node is operational; warmup overwrites this shortly.
 	log, err := c.capture(configDir)
 	if err == nil {
 		if fp, ok := ParseFingerprint(log); ok {
@@ -102,10 +118,7 @@ func (c *FPCache) Get(account, configDir string, now time.Time) (Fingerprint, bo
 			return fp, true
 		}
 	}
-
-	// Live capture failed — use built-in fingerprint so the node is
-	// immediately operational after credential upload.
-	logDD("fingerprint capture failed, using built-in fallback")
+	logDD("cold-start fingerprint capture failed, using built-in fallback")
 	c.mu.Lock()
 	c.entries[account] = fpEntry{fp: builtinFP, capturedAt: now}
 	c.mu.Unlock()
