@@ -127,7 +127,10 @@ func relayHandler(d RelayDeps) http.HandlerFunc {
 
 		if !stream {
 			// Client wants non-streaming: read full SSE, assemble final Message JSON.
-			assembled, assembleErr := assembleSSEToMessage(resp.Body)
+			// decodedBody transparently decompresses per Content-Encoding (we now
+			// advertise gzip/br/zstd like real CC); the non-stream path builds its
+			// own response headers so it never forwards content-encoding.
+			assembled, assembleErr := assembleSSEToMessage(decodedBody(resp))
 			if assembleErr != nil {
 				logDD("sse_assemble_error: %v", assembleErr)
 				w.Header().Set("Content-Type", "application/json")
@@ -175,10 +178,14 @@ func relayHandler(d RelayDeps) http.HandlerFunc {
 		w.Header().Set("X-Upstream-TTFB-Ms", fmt.Sprintf("%d", upstreamTTFB))
 		w.WriteHeader(resp.StatusCode)
 		rc := http.NewResponseController(w)
+		// decodedBody decompresses per Content-Encoding; we already stripped the
+		// content-encoding/content-length response headers above, so the client
+		// never double-decodes.
+		respReader := decodedBody(resp)
 		buf := make([]byte, 16*1024)
 		var respCapture bytes.Buffer
 		for {
-			n, rerr := resp.Body.Read(buf)
+			n, rerr := respReader.Read(buf)
 			if n > 0 {
 				if _, werr := w.Write(buf[:n]); werr != nil {
 					break
