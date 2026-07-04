@@ -142,6 +142,12 @@ func assembleSSEToMessage(r io.Reader) ([]byte, error) {
 		return lastSSEError, fmt.Errorf("upstream SSE error")
 	}
 
+	// Surface the real reason the stream ended before any message_start: a read
+	// error (context canceled, network reset, buffer exceeded) is distinct from a
+	// clean EOF where the upstream sent 200 then closed with an empty body.
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("sse read: %w", err)
+	}
 	return nil, io.ErrUnexpectedEOF
 }
 

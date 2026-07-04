@@ -134,6 +134,24 @@ func relayHandler(d RelayDeps) http.HandlerFunc {
 			// advertise gzip/br/zstd like real CC); the non-stream path builds its
 			// own response headers so it never forwards content-encoding.
 			assembled, assembleErr := assembleSSEToMessage(decodedBody(resp))
+			if assembleErr != nil && assembled == nil {
+				// Upstream returned 2xx then closed before any message_start (transient
+				// empty stream). Retry once with the same cloaked body before failing.
+				resp.Body.Close()
+				logDD("sse_empty_stream, retrying once: %v", assembleErr)
+				if retryReq, rerr := http.NewRequestWithContext(r.Context(), "POST", "https://api.anthropic.com/v1/messages?beta=true", bytesReader(cloaked)); rerr == nil {
+					retryReq.Header = headers
+					if resp2, err2 := d.Transport.RoundTrip(retryReq); err2 == nil {
+						defer resp2.Body.Close()
+						if resp2.StatusCode >= 200 && resp2.StatusCode < 300 {
+							assembled, assembleErr = assembleSSEToMessage(decodedBody(resp2))
+							if requestID == "" {
+								requestID = resp2.Header.Get("Request-Id")
+							}
+						}
+					}
+				}
+			}
 			if assembleErr != nil {
 				logDD("sse_assemble_error: %v", assembleErr)
 				w.Header().Set("Content-Type", "application/json")
