@@ -24,6 +24,10 @@ func stripEmptyImageBlocks(msgs any) {
 		if mm == nil {
 			continue
 		}
+		// Never touch assistant turns (preserve thinking-block integrity).
+		if mm["role"] == "assistant" {
+			continue
+		}
 		content, _ := mm["content"].([]any)
 		if content == nil {
 			continue

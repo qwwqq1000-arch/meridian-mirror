@@ -366,6 +366,12 @@ func stripEmptyTextBlocks(msgs any) any {
 		if mm == nil {
 			continue
 		}
+		// NEVER modify assistant turns: Anthropic requires thinking blocks (and the
+		// whole assistant message) to be replayed byte-identical, or it rejects the
+		// request with "Invalid signature in thinking block". Only clean user content.
+		if mm["role"] == "assistant" {
+			continue
+		}
 		content, _ := mm["content"].([]any)
 		if content == nil {
 			continue
