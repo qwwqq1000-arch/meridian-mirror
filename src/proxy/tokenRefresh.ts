@@ -1,0 +1,474 @@
+/**
+ * Cross-platform OAuth token refresh for Claude Code credentials.
+ *
+ * Storage backends:
+ *   macOS  — system Keychain via /usr/bin/security (no prompt — pre-authorised)
+ *   Linux  — ~/.claude/.credentials.json
+ *
+ * The credential store is dependency-injectable for testing. Production code
+ * uses createPlatformCredentialStore() which picks the right backend
+ * automatically.
+ *
+ * Concurrent calls to refreshOAuthToken() are deduplicated: if a refresh is
+ * already in flight, subsequent callers wait for the same promise rather than
+ * issuing a second network request and racing on the write.
+ */
+
+import { execFile as execFileCb } from "node:child_process"
+import { createHash } from "node:crypto"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { homedir, platform, userInfo } from "node:os"
+import { dirname, join, resolve } from "node:path"
+import { promisify } from "node:util"
+import { claudeLog } from "../logger"
+
+const execFile = promisify(execFileCb)
+
+const OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+const KEYCHAIN_SERVICE = "Claude Code-credentials"
+const CREDENTIALS_FILE = `${homedir()}/.claude/.credentials.json`
+const DEFAULT_CLAUDE_DIR = `${homedir()}/.claude`
+
+/**
+ * Map a `claudeConfigDir` to the keychain service name claude-code uses
+ * for that directory.
+ *
+ * Default `~/.claude` uses the bare service name `Claude Code-credentials`.
+ * Any other directory uses `Claude Code-credentials-<sha256(absPath).slice(0,8)>` —
+ * matching claude-code's own convention so we can read OAuth tokens for
+ * additional Meridian profiles without prompting the user.
+ */
+export function configDirToKeychainService(claudeConfigDir: string): string {
+  const abs = resolve(claudeConfigDir)
+  if (abs === resolve(DEFAULT_CLAUDE_DIR)) return KEYCHAIN_SERVICE
+  const hash = createHash("sha256").update(abs).digest("hex").slice(0, 8)
+  return `${KEYCHAIN_SERVICE}-${hash}`
+}
+
+/** Map `claudeConfigDir` to the file-based credentials path. */
+export function configDirToCredentialsFile(claudeConfigDir: string): string {
+  return join(resolve(claudeConfigDir), ".credentials.json")
+}
+
+interface OAuthCredentials {
+  accessToken: string
+  refreshToken: string
+  expiresAt: number
+  scopes?: string[]
+  subscriptionType?: string
+  rateLimitTier?: string
+}
+
+interface CredentialsFile {
+  claudeAiOauth: OAuthCredentials
+  [key: string]: unknown
+}
+
+// ---------------------------------------------------------------------------
+// Credential store interface — injectable for testing
+// ---------------------------------------------------------------------------
+
+export interface CredentialStore {
+  /** Stable identity for in-flight refresh deduplication across store instances. */
+  refreshKey?: string
+  read(): Promise<CredentialsFile | null>
+  write(credentials: CredentialsFile): Promise<boolean>
+}
+
+/**
+ * Serialize a credentials object to the on-disk / Keychain format Claude Code
+ * expects.
+ *
+ * MUST be compact (no whitespace) — Claude Code's credential parser cannot
+ * read pretty-printed JSON and treats the user as logged out when it
+ * encounters one. See issue #452.
+ *
+ * Exported so the regression test can pin the output format directly.
+ */
+export function serializeCredentials(credentials: CredentialsFile): string {
+  return JSON.stringify(credentials)
+}
+
+// ---------------------------------------------------------------------------
+// macOS Keychain backend
+// ---------------------------------------------------------------------------
+//
+// Claude Code stores credentials as hex-encoded JSON in the Keychain after
+// `claude login`. Older installs may store raw JSON. We detect on read and
+// preserve the original encoding on write so Claude Code can always read back
+// what we write.
+
+function parseKeychainValue(raw: string): { credentials: CredentialsFile; wasHex: boolean } | null {
+  const trimmed = raw.trim()
+  // Try raw JSON first
+  try {
+    return { credentials: JSON.parse(trimmed) as CredentialsFile, wasHex: false }
+  } catch {}
+  // Try hex-decoded JSON (Claude Code's format after `claude login`)
+  try {
+    const decoded = Buffer.from(trimmed, "hex").toString("utf-8")
+    return { credentials: JSON.parse(decoded) as CredentialsFile, wasHex: true }
+  } catch {}
+  return null
+}
+
+// Track encoding format across read → write within the same refresh call.
+// Keyed by service name so per-profile stores don't clobber each other.
+const keychainWasHexByService = new Map<string, boolean>()
+
+function buildMacosStore(serviceName: string): CredentialStore {
+  return {
+    refreshKey: `keychain:${serviceName}`,
+
+    async read() {
+      try {
+        const { stdout } = await execFile(
+          "/usr/bin/security",
+          ["find-generic-password", "-s", serviceName, "-a", userInfo().username, "-w"],
+          { timeout: 5000 }
+        )
+        const parsed = parseKeychainValue(stdout)
+        if (!parsed) throw new Error("Could not parse keychain value as JSON or hex-encoded JSON")
+        keychainWasHexByService.set(serviceName, parsed.wasHex)
+        return parsed.credentials
+      } catch (err) {
+        claudeLog("token_refresh.keychain_read_failed", { service: serviceName, error: String(err) })
+        return null
+      }
+    },
+
+    async write(credentials) {
+      const json = serializeCredentials(credentials)
+      const wasHex = keychainWasHexByService.get(serviceName) ?? false
+      // Write back in the same encoding Claude Code expects — hex after `claude login`.
+      const value = wasHex ? Buffer.from(json).toString("hex") : json
+      try {
+        await execFile(
+          "/usr/bin/security",
+          ["add-generic-password", "-U", "-s", serviceName, "-a", userInfo().username, "-w", value],
+          { timeout: 5000 }
+        )
+        return true
+      } catch (err) {
+        claudeLog("token_refresh.keychain_write_failed", { service: serviceName, error: String(err) })
+        return false
+      }
+    },
+  }
+}
+
+const macosStore: CredentialStore = buildMacosStore(KEYCHAIN_SERVICE)
+
+// ---------------------------------------------------------------------------
+// Linux / file backend
+// ---------------------------------------------------------------------------
+
+function buildFileStore(filePath: string): CredentialStore {
+  const absPath = resolve(filePath)
+  return {
+    refreshKey: `file:${absPath}`,
+
+    async read() {
+      try {
+        if (!existsSync(absPath)) return null
+        return JSON.parse(readFileSync(absPath, "utf-8")) as CredentialsFile
+      } catch (err) {
+        claudeLog("token_refresh.file_read_failed", { path: absPath, error: String(err) })
+        return null
+      }
+    },
+
+    async write(credentials) {
+      try {
+        // Ensure parent dir exists for non-default paths.
+        mkdirSync(dirname(absPath), { recursive: true })
+        writeFileSync(absPath, serializeCredentials(credentials), "utf-8")
+        return true
+      } catch (err) {
+        claudeLog("token_refresh.file_write_failed", { path: absPath, error: String(err) })
+        return false
+      }
+    },
+  }
+}
+
+
+const fileStore: CredentialStore = buildFileStore(CREDENTIALS_FILE)
+
+/**
+ * Returns the appropriate credential store for the current platform.
+ *
+ * If `claudeConfigDir` is provided, returns a profile-specific store that
+ * reads from the matching keychain entry (macOS) or `<dir>/.credentials.json`
+ * (Linux). Default behaviour (no opts) is unchanged — reads from the
+ * standard `~/.claude` location.
+ */
+export function createPlatformCredentialStore(opts?: { claudeConfigDir?: string }): CredentialStore {
+  if (opts?.claudeConfigDir) {
+    if (platform() === "darwin") {
+      return buildMacosStore(configDirToKeychainService(opts.claudeConfigDir))
+    }
+    return buildFileStore(configDirToCredentialsFile(opts.claudeConfigDir))
+  }
+  return platform() === "darwin" ? macosStore : fileStore
+}
+
+/** Look up the appropriate file path for a profile (Linux convention even on macOS for inspection). */
+export function credentialsFilePathForProfile(claudeConfigDir?: string): string {
+  return claudeConfigDir ? configDirToCredentialsFile(claudeConfigDir) : CREDENTIALS_FILE
+}
+
+// ---------------------------------------------------------------------------
+// OAuth refresh
+// ---------------------------------------------------------------------------
+
+/** In-flight refresh promises — deduplicates concurrent callers per credential store. */
+const inflightRefreshByKey = new Map<string, Promise<boolean>>()
+const inflightRefreshByStore = new WeakMap<CredentialStore, Promise<boolean>>()
+
+/**
+ * Refresh the Claude Code OAuth access token.
+ *
+ * Reads the stored refresh token, exchanges it for a new access token via
+ * Anthropic's OAuth endpoint, and writes the updated credentials back.
+ *
+ * Returns true on success, false on any failure. Concurrent calls share one
+ * in-flight request so only one network round-trip is made.
+ *
+ * @param store  Override the credential store (for testing).
+ */
+export async function refreshOAuthToken(store?: CredentialStore): Promise<boolean> {
+  const s = store ?? createPlatformCredentialStore()
+  const refreshKey = s.refreshKey
+  if (refreshKey) {
+    const inflight = inflightRefreshByKey.get(refreshKey)
+    if (inflight) return inflight
+
+    const refresh = doRefresh(s).finally(() => {
+      inflightRefreshByKey.delete(refreshKey)
+    })
+    inflightRefreshByKey.set(refreshKey, refresh)
+    return refresh
+  }
+
+  const inflight = inflightRefreshByStore.get(s)
+  if (inflight) return inflight
+
+  const refresh = doRefresh(s).finally(() => {
+    inflightRefreshByStore.delete(s)
+  })
+  inflightRefreshByStore.set(s, refresh)
+  return refresh
+}
+
+async function doRefresh(store: CredentialStore): Promise<boolean> {
+  const credentials = await store.read()
+  if (!credentials) {
+    claudeLog("token_refresh.no_credentials", {})
+    return false
+  }
+
+  const { refreshToken } = credentials.claudeAiOauth
+  if (!refreshToken) {
+    claudeLog("token_refresh.no_refresh_token", {})
+    return false
+  }
+
+  let response: Response
+  try {
+    response = await fetch(OAUTH_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        grant_type: "refresh_token",
+        client_id: OAUTH_CLIENT_ID,
+        refresh_token: refreshToken,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    })
+  } catch (err) {
+    claudeLog("token_refresh.request_failed", { error: String(err) })
+    return false
+  }
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "")
+    claudeLog("token_refresh.bad_response", { status: response.status, body })
+    return false
+  }
+
+  let tokenData: { access_token: string; refresh_token?: string; expires_in?: number; expires_at?: number }
+  try {
+    tokenData = await response.json() as typeof tokenData
+  } catch (err) {
+    claudeLog("token_refresh.parse_failed", { error: String(err) })
+    return false
+  }
+
+  const now = Date.now()
+  const expiresAt =
+    tokenData.expires_at ??
+    (tokenData.expires_in ? now + tokenData.expires_in * 1000 : now + 8 * 60 * 60 * 1000)
+
+  credentials.claudeAiOauth = {
+    ...credentials.claudeAiOauth,
+    accessToken: tokenData.access_token,
+    refreshToken: tokenData.refresh_token ?? refreshToken,
+    expiresAt,
+  }
+
+  const written = await store.write(credentials)
+  if (!written) return false
+
+  claudeLog("token_refresh.success", { expiresAt })
+  return true
+}
+
+/**
+ * Refresh the access token if it is within `bufferMs` of expiry.
+ *
+ * Cheap to call before every SDK request: when the token isn't due yet this
+ * is just one credential-store read. When it is due, the underlying
+ * `refreshOAuthToken()` call is in-flight-deduplicated so concurrent callers
+ * share one network round-trip.
+ *
+ * Returns true when the token is fresh after the call (already valid OR
+ * successfully refreshed), false on any failure (no credentials, no
+ * expiresAt, refresh request failed). False is non-fatal — the caller
+ * proceeds with whatever token is on disk and falls back to the reactive
+ * refresh-on-401 path if Anthropic rejects it.
+ */
+export async function ensureFreshToken(
+  store?: CredentialStore,
+  bufferMs = 5 * 60 * 1000,
+): Promise<boolean> {
+  const s = store ?? createPlatformCredentialStore()
+  const credentials = await s.read()
+  const expiresAt = credentials?.claudeAiOauth?.expiresAt
+  if (!expiresAt) return false
+  if (expiresAt - Date.now() > bufferMs) return true
+  return refreshOAuthToken(s)
+}
+
+// ---------------------------------------------------------------------------
+// Background refresh scheduler
+// ---------------------------------------------------------------------------
+
+let scheduledRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let scheduledRefreshActive = false
+// Generation counter — bumped on every start/stop. Each scheduleNext chain
+// captures the generation it began with and re-checks it after every await;
+// if the global generation has moved on, the chain has been superseded and
+// must bail rather than arm a follow-up timer. Without this, a stop()+start()
+// that interleaves with an in-flight read leaves the first chain alive,
+// arming a timer that overwrites scheduledRefreshTimer (so stop() can't
+// clear it) and keeps firing in parallel with the live chain.
+let scheduledRefreshGeneration = 0
+
+/**
+ * Start a self-rescheduling timer that refreshes the access token shortly
+ * before each expiry — regardless of incoming traffic.
+ *
+ * Idempotent: a second call while one is already running is a no-op. Safe to
+ * call from any code path; returns synchronously and schedules in the
+ * background.
+ *
+ * Why traffic-independent matters: without this, an idle proxy never fires
+ * either the proactive (`ensureFreshToken`) or reactive (401-retry) refresh
+ * path. Anthropic's OAuth refresh tokens appear to be invalidated server-side
+ * after sitting unused for an extended period (observed 2026-05-03: two NAS
+ * instances idle past expiry both got `400 invalid_grant` on a manual refresh
+ * attempt; only fix was OAuth-flow re-login). Running a refresh every ~8h
+ * keeps the refresh chain warm.
+ *
+ * On `refreshOAuthToken()` failure (network, transient API error, refresh
+ * token rejected) we retry every `failureRetryMs` — gives operators a window
+ * to `claude login` and have the new tokens picked up automatically on the
+ * next tick.
+ */
+export function startBackgroundRefresh(
+  store?: CredentialStore,
+  bufferMs = 5 * 60 * 1000,
+  failureRetryMs = 5 * 60 * 1000,
+): void {
+  if (scheduledRefreshActive) return
+  scheduledRefreshActive = true
+  const gen = ++scheduledRefreshGeneration
+  void scheduleNext(store ?? createPlatformCredentialStore(), bufferMs, failureRetryMs, gen)
+}
+
+/** Stop the background scheduler. Idempotent. */
+export function stopBackgroundRefresh(): void {
+  scheduledRefreshActive = false
+  scheduledRefreshGeneration++
+  if (scheduledRefreshTimer) clearTimeout(scheduledRefreshTimer)
+  scheduledRefreshTimer = null
+}
+
+async function scheduleNext(
+  store: CredentialStore,
+  bufferMs: number,
+  failureRetryMs: number,
+  gen: number,
+): Promise<void> {
+  if (!scheduledRefreshActive || gen !== scheduledRefreshGeneration) return
+
+  const credentials = await store.read().catch(() => null)
+  if (!scheduledRefreshActive || gen !== scheduledRefreshGeneration) return
+
+  const expiresAt = credentials?.claudeAiOauth?.expiresAt
+
+  if (!expiresAt) {
+    // Operator hasn't logged in yet (no credentials) or credentials are
+    // missing the field. Re-poll periodically — once `claude login` writes
+    // the file, the next tick picks it up.
+    armTimer(failureRetryMs, store, bufferMs, failureRetryMs, gen)
+    return
+  }
+
+  const dueIn = expiresAt - Date.now() - bufferMs
+  if (dueIn <= 0) {
+    // Already due (or past) — fire now, schedule the follow-up based on the
+    // new expiresAt (or retry in failureRetryMs if refresh failed).
+    const ok = await refreshOAuthToken(store)
+    if (!scheduledRefreshActive || gen !== scheduledRefreshGeneration) return
+    claudeLog("token_refresh.scheduled", { ok, immediate: true })
+    armTimer(ok ? 0 : failureRetryMs, store, bufferMs, failureRetryMs, gen)
+    return
+  }
+
+  armTimer(dueIn, store, bufferMs, failureRetryMs, gen)
+}
+
+function armTimer(
+  delayMs: number,
+  store: CredentialStore,
+  bufferMs: number,
+  failureRetryMs: number,
+  gen: number,
+): void {
+  scheduledRefreshTimer = setTimeout(async () => {
+    if (!scheduledRefreshActive || gen !== scheduledRefreshGeneration) return
+    // The dueIn re-check inside scheduleNext distinguishes "fire-now" from
+    // "reschedule-only" ticks: when the disk-state recompute lands inside the
+    // buffer window, scheduleNext fires a refresh and emits the debug-gated
+    // `token_refresh.scheduled` telemetry; otherwise it just arms the next
+    // timer. Neither path writes to stderr (the unconditional log was removed
+    // in #518 to stop polluting embedded TUI hosts).
+    void scheduleNext(store, bufferMs, failureRetryMs, gen)
+  }, delayMs)
+  if (scheduledRefreshTimer && (scheduledRefreshTimer as { unref?: () => void }).unref) {
+    (scheduledRefreshTimer as { unref: () => void }).unref()
+  }
+}
+
+/** For testing only. */
+export function isBackgroundRefreshActive(): boolean {
+  return scheduledRefreshActive
+}
+
+/** Reset in-flight state — for testing only. */
+export function resetInflightRefresh(): void {
+  inflightRefreshByKey.clear()
+}

@@ -1,0 +1,141 @@
+package main
+
+import (
+	"os"
+	"os/exec"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+)
+
+type Fingerprint map[string]string
+
+var excluded = map[string]bool{
+	"authorization": true, "x-claude-code-session-id": true,
+	"x-stainless-retry-count": true, "content-length": true,
+	"host": true, "connection": true, "accept-encoding": true,
+}
+
+var (
+	headersBlockRe = regexp.MustCompile(`(?s)headers:\s*\{(.*?)\}`)
+	headerPairRe   = regexp.MustCompile(`(?:"([^"\n]+)"|([A-Za-z0-9-]+))\s*:\s*"([^"]*)"`)
+)
+
+func osEnviron() []string { return os.Environ() }
+
+// ParseFingerprint extracts the complete header set from ANTHROPIC_LOG=debug
+// output, dropping per-request/transport headers. ok=false unless a genuine
+// claude-cli user-agent is present.
+func ParseFingerprint(debugLog string) (Fingerprint, bool) {
+	block := headersBlockRe.FindStringSubmatch(debugLog)
+	if block == nil {
+		return nil, false
+	}
+	fp := Fingerprint{}
+	for _, m := range headerPairRe.FindAllStringSubmatch(block[1], -1) {
+		key := strings.ToLower(m[1])
+		if key == "" {
+			key = strings.ToLower(m[2])
+		}
+		if key == "" || excluded[key] {
+			continue
+		}
+		fp[key] = m[3]
+	}
+	if ua := fp["user-agent"]; ua == "" || !strings.HasPrefix(ua, "claude-cli/") {
+		return nil, false
+	}
+	return fp, true
+}
+
+type fpEntry struct {
+	fp         Fingerprint
+	capturedAt time.Time
+}
+
+type FPCache struct {
+	ttl     time.Duration
+	capture func(configDir string) (string, error)
+	mu      sync.Mutex
+	entries map[string]fpEntry
+}
+
+func NewFPCache(ttl time.Duration, capture func(string) (string, error)) *FPCache {
+	return &FPCache{ttl: ttl, capture: capture, entries: map[string]fpEntry{}}
+}
+
+// builtinFP is a hard-coded fingerprint derived from a real Claude Code 2.1.187
+// session. Used as an immediate fallback so new nodes don't need a live CC
+// request to activate the native path.
+var builtinFP = Fingerprint{
+	"user-agent":                            "claude-cli/2.1.196 (external, sdk-cli)",
+	"anthropic-version":                     "2023-06-01",
+	"anthropic-beta":                        "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11,cache-diagnosis-2026-04-07",
+	"anthropic-dangerous-direct-browser-access": "true",
+	"x-stainless-lang":                      "js",
+	"x-stainless-os":                        "Linux",
+	"x-stainless-arch":                      "x64",
+	"x-stainless-runtime":                   "node",
+	"x-stainless-runtime-version":           "v26.3.0",
+	"x-stainless-package-version":           "0.94.0",
+	"x-stainless-timeout":                   "600",
+	"x-app":                                 "cli",
+}
+
+func (c *FPCache) Get(account, configDir string, now time.Time) (Fingerprint, bool) {
+	c.mu.Lock()
+	if e, ok := c.entries[account]; ok && now.Sub(e.capturedAt) <= c.ttl {
+		c.mu.Unlock()
+		return e.fp, true
+	}
+	c.mu.Unlock()
+
+	log, err := c.capture(configDir)
+	if err == nil {
+		if fp, ok := ParseFingerprint(log); ok {
+			c.mu.Lock()
+			c.entries[account] = fpEntry{fp: fp, capturedAt: now}
+			c.mu.Unlock()
+			return fp, true
+		}
+	}
+
+	// Live capture failed — use built-in fingerprint so the node is
+	// immediately operational after credential upload.
+	logDD("fingerprint capture failed, using built-in fallback")
+	c.mu.Lock()
+	c.entries[account] = fpEntry{fp: builtinFP, capturedAt: now}
+	c.mu.Unlock()
+	return builtinFP, true
+}
+
+// Peek returns the first cached fingerprint (any account). Used by DatadogEmitter
+// to read version/betas/node_version without importing lock internals.
+func (c *FPCache) Peek() Fingerprint {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range c.entries {
+		return e.fp
+	}
+	return nil
+}
+
+// defaultCapture returns a capture func that runs the real CLI with
+// ANTHROPIC_LOG=debug to surface its outgoing headers. The returned func
+// uses its per-call configDir argument (from the relay request's
+// X-Native-Config-Dir), falling back to the server-startup configDir only
+// when the caller passes "".
+func defaultCapture(claudePath, fallbackConfigDir string) func(string) (string, error) {
+	return func(configDir string) (string, error) {
+		dir := configDir
+		if dir == "" {
+			dir = fallbackConfigDir
+		}
+		cmd := exec.Command(claudePath, "-p", "hi")
+		cmd.Env = append(append([]string{}, osEnviron()...),
+			"ANTHROPIC_LOG=debug", "CLAUDE_CONFIG_DIR="+resolveConfigDir(dir))
+		out, _ := cmd.CombinedOutput()
+		return string(out), nil
+	}
+}

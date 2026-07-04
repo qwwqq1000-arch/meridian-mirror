@@ -1,0 +1,8 @@
+{
+  "claude-code": { "codeSystemPrompt": false },
+  "opencode": { "codeSystemPrompt": false },
+  "crush": { "codeSystemPrompt": false },
+  "forgecode": { "codeSystemPrompt": false },
+  "pi": { "codeSystemPrompt": false },
+  "droid": { "codeSystemPrompt": false }
+}

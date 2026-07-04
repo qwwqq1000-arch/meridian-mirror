@@ -1,0 +1,5 @@
+{
+  "nativeForward": true,
+  "nativeBodyCheck": false,
+  "egressProxy": "__EGRESS_PROXY__"
+}

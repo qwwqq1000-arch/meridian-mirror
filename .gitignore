@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Bun
+bun.lockb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+
+# Temporary files
+*.tmp
+*.temp
+context.md
+.omc/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/target/
+
+# Native-egress binary (built from source via go build)
+native-egress/native-egress
+native-egress/tls_test
+native-egress/tls_test_main.go
+
+# cc-hook build artifacts and logs
+tools/cc-hook/cc-hook
+tools/cc-hook/cc-hook-logs/
+
+# Local agent tooling (per-developer; never commit)
+.claude/
+.pylon/
+testnode

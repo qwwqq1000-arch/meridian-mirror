@@ -1,0 +1,90 @@
+{
+  "name": "@rynfar/meridian",
+  "version": "1.45.0",
+  "description": "Local Anthropic API powered by your Claude Max subscription. One subscription, every agent.",
+  "type": "module",
+  "main": "./dist/server.js",
+  "types": "./dist/proxy/server.d.ts",
+  "bin": {
+    "meridian": "./dist/cli.js",
+    "claude-max-proxy": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/proxy/server.d.ts",
+      "default": "./dist/server.js"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "./bin/claude-proxy-supervisor.sh",
+    "proxy": "./bin/claude-proxy-supervisor.sh",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && bun build bin/cli.ts src/proxy/server.ts --outdir dist --target node --splitting --external @anthropic-ai/claude-agent-sdk --external jsonc-parser --entry-naming \"[name].js\" && tsc -p tsconfig.build.json",
+    "postbuild": "node scripts/fix-bun-exports.mjs && node --check dist/cli.js && node --check dist/server.js && node -e \"if(!require('fs').existsSync('dist/proxy/server.d.ts'))process.exit(1)\"",
+    "postinstall": "node ./node_modules/@anthropic-ai/claude-code/install.cjs 2>/dev/null || true",
+    "prepublishOnly": "bun run build",
+    "test": "bun test --path-ignore-patterns '**/*session-store*' --path-ignore-patterns '**/*proxy-async-ops*' --path-ignore-patterns '**/*models-auth-status*' --path-ignore-patterns '**/*proxy-context-usage-store*' --path-ignore-patterns '**/*proxy-passthrough-thinking*' --path-ignore-patterns '**/*session-recovery*' --path-ignore-patterns '**/*models.test*' && bun test src/__tests__/proxy-async-ops.test.ts && bun test src/__tests__/proxy-session-store.test.ts && bun test src/__tests__/session-store-pruning.test.ts && bun test src/__tests__/proxy-session-store-locking.test.ts && bun test src/__tests__/proxy-context-usage-store.test.ts && bun test src/__tests__/models-auth-status.test.ts && bun test src/__tests__/proxy-passthrough-thinking.test.ts && bun test src/__tests__/proxy-session-recovery.test.ts && bun test src/__tests__/models.test.ts",
+    "nix:lock": "bun2nix -o bun.nix",
+    "typecheck": "tsc --noEmit",
+    "proxy:direct": "bun run ./bin/cli.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.2.119",
+    "@anthropic-ai/claude-code": "2.1.198",
+    "jsonc-parser": "^3.3.1",
+    "libsql": "^0.5.29"
+  },
+  "devDependencies": {
+    "@hono/node-server": "^1.19.11",
+    "@types/bun": "^1.3.11",
+    "@types/node": "^22.0.0",
+    "bun2nix": "^2.0.8",
+    "glob": "^13.0.0",
+    "hono": "^4.11.4",
+    "typescript": "^5.8.2"
+  },
+  "files": [
+    "dist/",
+    "plugin/",
+    "assets/",
+    "README.md"
+  ],
+  "keywords": [
+    "meridian",
+    "claude",
+    "claude-max",
+    "claude-code",
+    "anthropic",
+    "anthropic-api",
+    "claude-agent-sdk",
+    "ai-coding",
+    "ai-assistant",
+    "proxy",
+    "opencode",
+    "cline",
+    "aider",
+    "crush",
+    "charmbracelet",
+    "droid",
+    "factory-ai",
+    "pi-coding-agent",
+    "open-webui",
+    "llm",
+    "coding-assistant",
+    "opencode-claude-max-proxy"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rynfar/meridian.git"
+  },
+  "homepage": "https://github.com/rynfar/meridian#readme",
+  "bugs": {
+    "url": "https://github.com/rynfar/meridian/issues"
+  },
+  "author": "rynfar",
+  "license": "MIT",
+  "private": false,
+  "packageManager": "bun@1.3.11"
+}
