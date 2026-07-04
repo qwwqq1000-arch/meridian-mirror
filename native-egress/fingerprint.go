@@ -14,7 +14,9 @@ type Fingerprint map[string]string
 var excluded = map[string]bool{
 	"authorization": true, "x-claude-code-session-id": true,
 	"x-stainless-retry-count": true, "content-length": true,
-	"host": true, "connection": true, "accept-encoding": true,
+	"host": true, "connection": true,
+	// accept-encoding is NOT excluded: real CC (undici) sends
+	// "gzip, deflate, br, zstd"; we capture and replay it verbatim.
 }
 
 var (

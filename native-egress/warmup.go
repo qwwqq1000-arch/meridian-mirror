@@ -1,29 +1,20 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 )
 
 func warmupLog(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "[native-egress] "+format+"\n", args...)
 }
-
-// warmupPreloadJS intercepts globalThis.fetch inside the CC CLI process and
-// writes the first large POST /v1/messages body (>10 KB = the main sonnet
-// request, not the small haiku routing request) to a temp file, then restores
-// the original fetch.  Loaded via NODE_OPTIONS=--require.
-const warmupPreloadJS = `const _of=globalThis.fetch,_fs=require("fs");
-globalThis.fetch=async function(u,o){
-if(typeof u==="string"&&u.includes("/v1/messages")&&o&&typeof o.body==="string"&&o.body.length>10000){
-try{_fs.writeFileSync(process.env._NE_BODY_PATH||"/tmp/ne_warmup_body.json",o.body)}catch(e){}
-globalThis.fetch=_of}
-return _of.apply(this,arguments)};
-`
 
 var warmupKick = make(chan struct{}, 1)
 
@@ -71,71 +62,77 @@ func warmupLoop(claudePath, configDir string, fpCache *FPCache, btCache *BodyTem
 // captured (body is best-effort — falls back to the builtin template). Failures
 // are non-fatal (builtin fallbacks remain) and the loop retries.
 func warmupTemplate(claudePath, configDir string, fpCache *FPCache, btCache *BodyTemplateCache) bool {
-	start := time.Now()
-	tmpDir := os.TempDir()
-	preloadPath := filepath.Join(tmpDir, "ne_warmup_preload.cjs")
-	bodyPath := filepath.Join(tmpDir, "ne_warmup_body.json")
-
-	os.Remove(bodyPath)
-	if err := os.WriteFile(preloadPath, []byte(warmupPreloadJS), 0644); err != nil {
-		warmupLog("warmup: write preload: %v", err)
+	fp, bodyData := captureAll(claudePath, configDir)
+	if fp == nil {
+		warmupLog("warmup: fingerprint capture failed (CC not logged in?)")
 		return false
 	}
-	defer os.Remove(preloadPath)
-	defer os.Remove(bodyPath)
-
-	nodeOpts := "--require " + preloadPath
-	if existing := os.Getenv("NODE_OPTIONS"); existing != "" {
-		nodeOpts = existing + " " + nodeOpts
-	}
-
-	cmd := exec.Command(claudePath, "-p", "hi")
-	cmd.Env = append(append([]string{}, osEnviron()...),
-		"ANTHROPIC_LOG=debug",
-		"CLAUDE_CONFIG_DIR="+resolveConfigDir(configDir),
-		"NODE_OPTIONS="+nodeOpts,
-		"_NE_BODY_PATH="+bodyPath,
-	)
-
-	warmupLog("warmup: running %s -p hi ...", claudePath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		warmupLog("warmup: claude exited with error: %v (output: %d bytes)", err, len(out))
-	}
-
-	fp, ok := ParseFingerprint(string(out))
-	if !ok {
-		warmupLog("warmup: fingerprint parse failed (CC not logged in?)")
-		return false
-	}
-
 	fpCache.mu.Lock()
 	fpCache.entries["default"] = fpEntry{fp: fp, capturedAt: time.Now()}
 	fpCache.mu.Unlock()
 
 	fpVersion := ExtractVersionFromUA(fp["user-agent"])
-	fpBetas := fp["anthropic-beta"]
-	fpNodeVer := fp["x-stainless-runtime-version"]
-	warmupLog("warmup: fingerprint learned (CC %s, node %s)", fpVersion, fpNodeVer)
+	warmupLog("warmup: fingerprint learned (CC %s)", fpVersion)
 
-	bodyData, err := os.ReadFile(bodyPath)
-	if err != nil || len(bodyData) == 0 {
-		warmupLog("warmup: body dump not found (CC binary may not support NODE_OPTIONS) — using builtin body template")
-		return true // fingerprint captured; body falls back to builtin (same as the proven-safe baseline)
+	if len(bodyData) == 0 {
+		warmupLog("warmup: body capture empty — using builtin body template")
+		return true
 	}
-
-	btCache.LearnFromCC(bodyData, fpVersion, fpBetas, fpNodeVer)
-	warmupLog("warmup: body template learned (%d bytes, %d tools) in %s",
-		len(bodyData), countTemplateTools(bodyData), time.Since(start).Round(time.Millisecond))
+	btCache.LearnFromCC(bodyData, fpVersion, fp["anthropic-beta"], fp["x-stainless-runtime-version"])
+	warmupLog("warmup: body template learned (%d bytes)", len(bodyData))
 	return true
 }
 
-func countTemplateTools(body []byte) int {
-	var parsed struct {
-		Tools []json.RawMessage `json:"tools"`
+// captureAll runs `claude -p hi` with ANTHROPIC_BASE_URL pointed at a local
+// server so we capture BOTH the request headers (→ fingerprint) and the full
+// body (→ template) from one genuine request. No real API call is made.
+func captureAll(claudePath, configDir string) (Fingerprint, []byte) {
+	var mu sync.Mutex
+	var capturedBody []byte
+	var capturedFP Fingerprint
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		if len(body) > len(capturedBody) {
+			capturedBody = body
+			fp := Fingerprint{}
+			for k, vals := range r.Header {
+				kl := strings.ToLower(k)
+				if excluded[kl] || len(vals) == 0 {
+					continue
+				}
+				fp[kl] = vals[0]
+			}
+			if ua := fp["user-agent"]; ua != "" && strings.HasPrefix(ua, "claude-cli/") {
+				capturedFP = fp
+			}
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write([]byte(`{"id":"msg_warmup","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}`))
+	})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		warmupLog("warmup: listen error: %v", err)
+		return nil, nil
 	}
-	if json.Unmarshal(body, &parsed) == nil {
-		return len(parsed.Tools)
-	}
-	return -1
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln)
+	defer srv.Close()
+
+	addr := ln.Addr().String()
+	cmd := exec.Command(claudePath, "-p", "hi")
+	cmd.Env = append(append([]string{}, osEnviron()...),
+		"ANTHROPIC_BASE_URL=http://"+addr,
+		"CLAUDE_CONFIG_DIR="+resolveConfigDir(configDir),
+	)
+	cmd.CombinedOutput()
+
+	mu.Lock()
+	defer mu.Unlock()
+	return capturedFP, capturedBody
 }
