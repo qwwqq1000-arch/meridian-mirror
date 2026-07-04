@@ -50,7 +50,7 @@ func relayHandler(d RelayDeps) http.HandlerFunc {
 		if t := d.BodyTemplate.Get(); t != nil {
 			tmpl = t
 		}
-		cloaked, err = MergeUserRequest(rawBody, tmpl, deriveUserID(account))
+		cloaked, err = MergeUserRequest(rawBody, tmpl, deriveUserID(account, configDir, d.SessionID(account)))
 		if err != nil {
 			degrade(w, "merge_error")
 			return

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -42,18 +43,32 @@ func marshalBody(body map[string]any) ([]byte, error) {
 const ClaudeCodeIdentity = "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK."
 const ccIdentityPrefix = "You are Claude Code, Anthropic's official CLI for Claude"
 
-// deriveUserID produces a deterministic user_id that matches the real CC
-// format: a JSON-encoded object with device_id, account_uuid and session_id.
-// Real CC sends: {"device_id":"<sha256-hex>","account_uuid":"<uuid>","session_id":"<uuid>"}
-// We derive all three deterministically from the account name so the same
-// account always produces the same user_id.
-func deriveUserID(account string) string {
-	h := sha256.Sum256([]byte("meridian-uid:" + account))
-	deviceID := fmt.Sprintf("%x", h)
-	accountUUID := fmt.Sprintf("%x-%x-%x-%x-%x", h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
-	sessionH := sha256.Sum256([]byte("meridian-sid:" + account))
-	sessionID := fmt.Sprintf("%x-%x-%x-%x-%x", sessionH[0:4], sessionH[4:6], sessionH[6:8], sessionH[8:10], sessionH[10:16])
+// deriveUserID builds metadata.user_id exactly like real CC:
+// {"device_id":<stable per-machine sha256>,"account_uuid":<real uuid>,"session_id":<session>}.
+// Verified against 20 golden captures: real CC uses the real account uuid, a
+// device_id that is INDEPENDENT of account_uuid, and a session_id EQUAL to the
+// x-claude-code-session-id header. session_id is threaded in from the relay so it
+// is the same value used in that header.
+func deriveUserID(account, configDir, sessionID string) string {
+	accountUUID := readAccountUUID(configDir)
+	if accountUUID == "" {
+		// Fallback only if the real uuid is not yet populated: derive from account,
+		// but keep it distinct from device_id.
+		h := sha256.Sum256([]byte("meridian-acct:" + account))
+		accountUUID = fmt.Sprintf("%x-%x-%x-%x-%x", h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
+	}
+	dh := sha256.Sum256([]byte("meridian-device:" + machineSeed()))
+	deviceID := fmt.Sprintf("%x", dh)
 	return `{"device_id":"` + deviceID + `","account_uuid":"` + accountUUID + `","session_id":"` + sessionID + `"}`
+}
+
+// machineSeed returns a stable per-container seed for device_id (hostname is
+// stable within a container's lifetime; real CC's device_id is likewise stable).
+func machineSeed() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "meridian-node"
 }
 
 func CloakBody(raw []byte, userID string) ([]byte, error) {
