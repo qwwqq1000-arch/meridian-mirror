@@ -17,6 +17,14 @@ export async function forwardToNative(input: {
    * structured outputs require their beta flag, which the static capture lacks.
    */
   anthropicBeta?: string
+  /**
+   * A stable per-conversation key (the client's session id, else the lineage
+   * session id, else the conversation fingerprint). The Go relay hashes it into
+   * metadata.session_id + x-claude-code-session-id so those ROTATE per
+   * conversation like real Claude Code — without it every request from an
+   * account shares one eternal session id, an obvious proxy tell.
+   */
+  sessionKey?: string
   fetchImpl?: FetchLike
 }): Promise<{ degraded: boolean; reason?: string; response?: Response; connectionFailed?: boolean }> {
   const fetchImpl = input.fetchImpl ?? (globalThis.fetch as FetchLike)
@@ -29,6 +37,7 @@ export async function forwardToNative(input: {
         "x-native-account": input.profile.account,
         "x-native-stream": input.stream ? "1" : "0",
         ...(input.anthropicBeta ? { "x-native-anthropic-beta": input.anthropicBeta } : {}),
+        ...(input.sessionKey ? { "x-native-session-key": input.sessionKey } : {}),
       },
       body: input.rawBody,
     })

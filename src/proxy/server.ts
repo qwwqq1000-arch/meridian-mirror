@@ -82,6 +82,7 @@ import { lookupSessionRecovery, listStoredSessions } from "./sessionStore"
 import { nativeEligible, applyRelayModeToPassthrough } from "./relayMode"
 import { CircuitBreaker, getNativeBaseUrl } from "./nativeSupervisor"
 import { forwardToNative } from "./nativeClient"
+import { getConversationFingerprint } from "./session/fingerprint"
 import { inspectClaudeCodeShape } from "./ccShape"
 // Re-export for backwards compatibility (existing tests import from here)
 export { computeLineageHash, hashMessage, computeMessageHashes }
@@ -1019,6 +1020,14 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               profile: { configDir, account: profile.id },
               stream,
               anthropicBeta: c.req.header("anthropic-beta"),
+              // Stable per-conversation key so native-egress rotates
+              // metadata.session_id + x-claude-code-session-id per conversation
+              // like real CC. Prefer the client's session id, then the resumed
+              // lineage id, then the (firstUserMessage, cwd) fingerprint.
+              sessionKey:
+                profileSessionId ??
+                resumeSessionId ??
+                getConversationFingerprint(Array.isArray(body.messages) ? body.messages : [], profileScopedCwd),
             })
             if (r.degraded) {
               // Only a genuine sidecar-unreachable failure trips the breaker.
