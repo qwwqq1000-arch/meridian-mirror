@@ -1028,9 +1028,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 profileSessionId ??
                 resumeSessionId ??
                 getConversationFingerprint(Array.isArray(body.messages) ? body.messages : [], profileScopedCwd),
-              // CC envelope injection is opt-in (default OFF). Off = cheap
-              // identity + the user's own tools; on = full ~33K CC disguise.
-              injectSystemPrompt: getNativeSetting("injectSystemPrompt") === true,
+              // injectSystemPrompt defaults ON (main CC harness prompt ~7K,
+              // cached) so the model behaves like CC; injectTools defaults OFF
+              // so the ~26K CC tool set stays out and the user's own tools pass
+              // through. Both flippable in the web settings page.
+              injectSystemPrompt: getNativeSetting("injectSystemPrompt") !== false,
               injectTools: getNativeSetting("injectTools") === true,
             })
             if (r.degraded) {
@@ -2763,7 +2765,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     return c.json({
       nativeForward: getSetting("nativeForward") !== false,
       nativeBodyCheck: getSetting("nativeBodyCheck") === true,
-      injectSystemPrompt: getSetting("injectSystemPrompt") === true,
+      injectSystemPrompt: getSetting("injectSystemPrompt") !== false,
       injectTools: getSetting("injectTools") === true,
     })
   })

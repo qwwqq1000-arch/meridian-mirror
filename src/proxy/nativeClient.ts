@@ -26,9 +26,9 @@ export async function forwardToNative(input: {
    */
   sessionKey?: string
   /**
-   * Inject the full CC MAIN system prompt (~7K-token harness prompt). When
-   * false (default) the relay sends only the cheap identity blocks, so customer
-   * usage isn't inflated by the ~33K envelope. Server-side decision only.
+   * Inject the full CC MAIN system prompt (~7K-token harness prompt, cached).
+   * Defaults ON so the model behaves like real CC; when false the relay sends
+   * only the cheap identity blocks. Server-side decision only.
    */
   injectSystemPrompt?: boolean
   /**
