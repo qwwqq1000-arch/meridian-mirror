@@ -63,9 +63,10 @@ func deriveUserID(account, configDir, sessionID string) string {
 	accountUUID := readAccountUUID(configDir)
 	if accountUUID == "" {
 		// Fallback only if the real uuid is not yet populated: derive from account,
-		// but keep it distinct from device_id.
+		// but keep it distinct from device_id. Real CC's account_uuid is a valid
+		// UUIDv4, so format ours as one too (not raw hash bytes).
 		h := sha256.Sum256([]byte("meridian-acct:" + account))
-		accountUUID = fmt.Sprintf("%x-%x-%x-%x-%x", h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
+		accountUUID = uuidV4FromBytes(h[:])
 	}
 	dh := sha256.Sum256([]byte("meridian-device:" + machineSeed()))
 	deviceID := fmt.Sprintf("%x", dh)
@@ -115,6 +116,18 @@ func loadOrCreateDeviceSeed() string {
 		return h
 	}
 	return "meridian-node"
+}
+
+// uuidV4FromBytes formats 16 bytes as a canonical UUIDv4 string, forcing the
+// version nibble to 4 and the variant nibble to 8-b. Real CC's session_id and
+// account_uuid are valid UUIDv4s; raw hash bytes formatted as 8-4-4-4-12 are
+// NOT (their version/variant bits are random), which is a detectable tell.
+func uuidV4FromBytes(b []byte) string {
+	var u [16]byte
+	copy(u[:], b)
+	u[6] = (u[6] & 0x0f) | 0x40 // version 4
+	u[8] = (u[8] & 0x3f) | 0x80 // variant 10xx
+	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])
 }
 
 func CloakBody(raw []byte, userID string) ([]byte, error) {
