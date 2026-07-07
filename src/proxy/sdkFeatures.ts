@@ -70,7 +70,10 @@ const DEFAULT_FEATURES: AdapterFeatures = {
   sdkDebug: false,
   additionalDirectories: "",
   relayMode: "auto",
-  nativeForward: true,
+  // Default OFF: the CC envelope injection (~33K system+tools per request) is
+  // opt-in. It doesn't prevent bans (ban = subscription age, proven by A/B) and
+  // inflates customer usage, so it must be turned on explicitly per profile.
+  nativeForward: false,
   nativeBodyCheck: false,
 }
 

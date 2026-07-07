@@ -995,7 +995,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // anti-forgery reject can fall through to the SDK path below.
       const { getSetting: getNativeSetting } = require("./settings") as typeof import("./settings")
       if (nativeEligible({
-        featureNativeForward: getNativeSetting("nativeForward") !== false || sdkFeatures.nativeForward,
+        // Default OFF: only inject the CC envelope when explicitly enabled via
+        // the nativeForward switch (or a per-adapter sdkFeatures opt-in). The
+        // envelope (~33K system+tools) doesn't prevent bans (ban = subscription
+        // age, proven by A/B) and inflates customer usage, so it must be opt-in.
+        featureNativeForward: getNativeSetting("nativeForward") === true || sdkFeatures.nativeForward === true,
         envForceNative: process.env.MERIDIAN_NATIVE_FORWARD === "1",
         clientForcedSdk: c.req.header("x-meridian-mode") === "sdk",
         profileType: profile.type,
@@ -2757,7 +2761,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   app.get("/settings/api/native", (c) => {
     const { getSetting } = require("./settings") as typeof import("./settings")
     return c.json({
-      nativeForward: getSetting("nativeForward") !== false,
+      nativeForward: getSetting("nativeForward") === true,
       nativeBodyCheck: getSetting("nativeBodyCheck") === true,
     })
   })
