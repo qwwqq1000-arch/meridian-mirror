@@ -313,11 +313,35 @@ func foldTextFrom(sysRaw json.RawMessage) string {
 // buildSystemBytes returns real CC's captured system array verbatim (SystemRaw)
 // when available; otherwise it marshals the parsed template, adding a default
 // ephemeral cache breakpoint if none exists (builtin/fallback path only).
-func buildSystemBytes(tmpl *BodyTemplate) []byte {
+//
+// When injectSystemPrompt is false (identity-only mode) it keeps only the first
+// two blocks — system[0] billing header + system[1] identity — and DROPS the
+// main harness prompt (block 3+, ~7K tokens). The identity blocks keep their
+// captured cache_control so the tiny prefix still caches.
+func buildSystemBytes(tmpl *BodyTemplate, injectSystemPrompt bool) []byte {
 	if len(tmpl.SystemRaw) > 0 {
-		return tmpl.SystemRaw
+		if injectSystemPrompt {
+			return tmpl.SystemRaw
+		}
+		var blocks []json.RawMessage
+		if json.Unmarshal(tmpl.SystemRaw, &blocks) == nil && len(blocks) > 2 {
+			var buf bytes.Buffer
+			buf.WriteByte('[')
+			for i, b := range blocks[:2] { // billing + identity only
+				if i > 0 {
+					buf.WriteByte(',')
+				}
+				buf.Write(b) // byte-preserved, keeps cache_control on identity
+			}
+			buf.WriteByte(']')
+			return buf.Bytes()
+		}
+		return tmpl.SystemRaw // <=2 blocks or parse failure: nothing to drop
 	}
 	sys := tmpl.System
+	if !injectSystemPrompt && len(sys) > 2 {
+		sys = sys[:2]
+	}
 	hasCC := false
 	for _, s := range sys {
 		if m, ok := s.(map[string]any); ok {
@@ -345,7 +369,17 @@ func buildSystemBytes(tmpl *BodyTemplate) []byte {
 
 // buildToolsBytes splices the captured base tools (ToolsRaw, byte-perfect order)
 // and appends only CC-recognized user tools (deduped, cache_control stripped).
-func buildToolsBytes(tmpl *BodyTemplate, userToolsRaw json.RawMessage) []byte {
+//
+// When injectTools is false (identity-only mode) it does NOT inject the CC base
+// 28 tools (~26K tokens); it passes the user's own tools through verbatim, or
+// omits the tools field entirely when the user sent none.
+func buildToolsBytes(tmpl *BodyTemplate, userToolsRaw json.RawMessage, injectTools bool) []byte {
+	if !injectTools {
+		if len(userToolsRaw) == 0 {
+			return nil
+		}
+		return userToolsRaw // pass the user's own tools through, byte-preserved
+	}
 	var baseRaw []json.RawMessage
 	if len(tmpl.ToolsRaw) > 0 {
 		json.Unmarshal(tmpl.ToolsRaw, &baseRaw)

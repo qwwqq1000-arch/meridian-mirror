@@ -995,11 +995,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // anti-forgery reject can fall through to the SDK path below.
       const { getSetting: getNativeSetting } = require("./settings") as typeof import("./settings")
       if (nativeEligible({
-        // Default OFF: only inject the CC envelope when explicitly enabled via
-        // the nativeForward switch (or a per-adapter sdkFeatures opt-in). The
-        // envelope (~33K system+tools) doesn't prevent bans (ban = subscription
-        // age, proven by A/B) and inflates customer usage, so it must be opt-in.
-        featureNativeForward: getNativeSetting("nativeForward") === true || sdkFeatures.nativeForward === true,
+        featureNativeForward: getNativeSetting("nativeForward") !== false || sdkFeatures.nativeForward,
         envForceNative: process.env.MERIDIAN_NATIVE_FORWARD === "1",
         clientForcedSdk: c.req.header("x-meridian-mode") === "sdk",
         profileType: profile.type,
@@ -1032,6 +1028,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 profileSessionId ??
                 resumeSessionId ??
                 getConversationFingerprint(Array.isArray(body.messages) ? body.messages : [], profileScopedCwd),
+              // CC envelope injection is opt-in (default OFF). Off = cheap
+              // identity + the user's own tools; on = full ~33K CC disguise.
+              injectSystemPrompt: getNativeSetting("injectSystemPrompt") === true,
+              injectTools: getNativeSetting("injectTools") === true,
             })
             if (r.degraded) {
               // Only a genuine sidecar-unreachable failure trips the breaker.
@@ -2761,8 +2761,10 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   app.get("/settings/api/native", (c) => {
     const { getSetting } = require("./settings") as typeof import("./settings")
     return c.json({
-      nativeForward: getSetting("nativeForward") === true,
+      nativeForward: getSetting("nativeForward") !== false,
       nativeBodyCheck: getSetting("nativeBodyCheck") === true,
+      injectSystemPrompt: getSetting("injectSystemPrompt") === true,
+      injectTools: getSetting("injectTools") === true,
     })
   })
   app.patch("/settings/api/native", async (c) => {
@@ -2788,6 +2790,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         return c.json({ error: "nativeBodyCheck must be a boolean" }, 400)
       }
       setSetting("nativeBodyCheck", input.nativeBodyCheck)
+    }
+    if ("injectSystemPrompt" in input) {
+      if (typeof input.injectSystemPrompt !== "boolean") {
+        return c.json({ error: "injectSystemPrompt must be a boolean" }, 400)
+      }
+      setSetting("injectSystemPrompt", input.injectSystemPrompt)
+    }
+    if ("injectTools" in input) {
+      if (typeof input.injectTools !== "boolean") {
+        return c.json({ error: "injectTools must be a boolean" }, 400)
+      }
+      setSetting("injectTools", input.injectTools)
     }
     return c.json({ ok: true })
   })

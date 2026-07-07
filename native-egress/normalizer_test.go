@@ -22,7 +22,7 @@ func TestNormalizerStripsUnsupportedToolAndForcesModelFields(t *testing.T) {
 	user := []byte(`{"model":"claude-sonnet-4-6","max_tokens":8000,"temperature":0.7,
 		"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],
 		"tools":[{"name":"Read"},{"name":"CustomUnsupportedTool"},{"name":"mcp__foo__bar"}]}`)
-	out, err := MergeUserRequest(user, baseTmpl(), `{"device_id":"d","account_uuid":"a","session_id":"s"}`)
+	out, err := MergeUserRequest(user, baseTmpl(), `{"device_id":"d","account_uuid":"a","session_id":"s"}`, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestNormalizerStripsUnsupportedToolAndForcesModelFields(t *testing.T) {
 
 func TestUserSystemFoldedIntoFirstUserMessage(t *testing.T) {
 	user := []byte(`{"model":"claude-sonnet-4-6","system":"AGENT INSTRUCTIONS","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
-	out, err := MergeUserRequest(user, baseTmpl(), `{"device_id":"d","account_uuid":"a","session_id":"s"}`)
+	out, err := MergeUserRequest(user, baseTmpl(), `{"device_id":"d","account_uuid":"a","session_id":"s"}`, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestUserSystemFoldedIntoFirstUserMessage(t *testing.T) {
 func TestMarshalBodyKeyOrder(t *testing.T) {
 	out, _ := MergeUserRequest(
 		[]byte(`{"model":"claude-sonnet-4-6","messages":[]}`), baseTmpl(),
-		`{"device_id":"d","account_uuid":"a","session_id":"s"}`)
+		`{"device_id":"d","account_uuid":"a","session_id":"s"}`, true, true)
 	s := string(out)
 	// real CC order: model, messages, system, tools, metadata, max_tokens, thinking, context_management, output_config, stream
 	order := []string{`"model"`, `"messages"`, `"system"`, `"tools"`, `"metadata"`, `"max_tokens"`, `"thinking"`, `"context_management"`, `"output_config"`, `"stream"`}

@@ -25,6 +25,17 @@ export async function forwardToNative(input: {
    * account shares one eternal session id, an obvious proxy tell.
    */
   sessionKey?: string
+  /**
+   * Inject the full CC MAIN system prompt (~7K-token harness prompt). When
+   * false (default) the relay sends only the cheap identity blocks, so customer
+   * usage isn't inflated by the ~33K envelope. Server-side decision only.
+   */
+  injectSystemPrompt?: boolean
+  /**
+   * Inject the CC base 28-tool set (~26K tokens). When false (default) the relay
+   * passes the user's OWN tools through verbatim. Server-side decision only.
+   */
+  injectTools?: boolean
   fetchImpl?: FetchLike
 }): Promise<{ degraded: boolean; reason?: string; response?: Response; connectionFailed?: boolean }> {
   const fetchImpl = input.fetchImpl ?? (globalThis.fetch as FetchLike)
@@ -36,6 +47,10 @@ export async function forwardToNative(input: {
         "x-native-config-dir": input.profile.configDir,
         "x-native-account": input.profile.account,
         "x-native-stream": input.stream ? "1" : "0",
+        // Identity-mode toggles: only inject the ~33K CC envelope when enabled.
+        // Always send both headers so an explicit "off" overrides any relay default.
+        "x-native-inject-system-prompt": input.injectSystemPrompt ? "1" : "0",
+        "x-native-inject-tools": input.injectTools ? "1" : "0",
         ...(input.anthropicBeta ? { "x-native-anthropic-beta": input.anthropicBeta } : {}),
         ...(input.sessionKey ? { "x-native-session-key": input.sessionKey } : {}),
       },

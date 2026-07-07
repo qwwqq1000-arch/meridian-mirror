@@ -30,6 +30,20 @@ export interface MeridianSettings {
    */
   nativeBodyCheck?: boolean
   /**
+   * Inject the full Claude Code MAIN system prompt (~7K-token harness prompt)
+   * into native-forwarded requests. When false (default) only the cheap identity
+   * blocks (billing header + "You are a Claude agent…") are sent, so customer
+   * usage isn't inflated by the ~33K envelope. Turn ON only when the full CC
+   * disguise is worth the token cost. Default: false (off).
+   */
+  injectSystemPrompt?: boolean
+  /**
+   * Inject the Claude Code base tool set (28 tools, ~26K tokens) into
+   * native-forwarded requests. When false (default) the request carries the
+   * user's OWN tools verbatim instead (not the CC 28, not empty). Default: false.
+   */
+  injectTools?: boolean
+  /**
    * Egress proxy (normalized URL, e.g. socks5://user:pass@host:port). Applied
    * as ALL_PROXY/HTTPS_PROXY env so the SDK subprocess + native sidecar route
    * outbound traffic through it. Empty/undefined = direct.

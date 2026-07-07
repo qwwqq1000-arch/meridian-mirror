@@ -36,4 +36,24 @@ describe("forwardToNative", () => {
     expect(sentHeaders["x-native-stream"]).toBe("1")
     expect(sentHeaders["x-native-anthropic-beta"]).toBe("structured-outputs-2025-12-15")
   })
+  it("defaults the inject toggles OFF (sends '0' headers) when unset", async () => {
+    let sentHeaders: Record<string, string> = {}
+    const fetchImpl = async (_u: string, init?: RequestInit) => {
+      sentHeaders = (init?.headers ?? {}) as Record<string, string>
+      return new Response("", { status: 200 })
+    }
+    await forwardToNative({ baseUrl: "http://127.0.0.1:9", rawBody: "{}", profile: { configDir: "/c", account: "a" }, stream: false, fetchImpl })
+    expect(sentHeaders["x-native-inject-system-prompt"]).toBe("0")
+    expect(sentHeaders["x-native-inject-tools"]).toBe("0")
+  })
+  it("sends the inject toggle headers as '1' when enabled", async () => {
+    let sentHeaders: Record<string, string> = {}
+    const fetchImpl = async (_u: string, init?: RequestInit) => {
+      sentHeaders = (init?.headers ?? {}) as Record<string, string>
+      return new Response("", { status: 200 })
+    }
+    await forwardToNative({ baseUrl: "http://127.0.0.1:9", rawBody: "{}", profile: { configDir: "/c", account: "a" }, stream: false, injectSystemPrompt: true, injectTools: true, fetchImpl })
+    expect(sentHeaders["x-native-inject-system-prompt"]).toBe("1")
+    expect(sentHeaders["x-native-inject-tools"]).toBe("1")
+  })
 })

@@ -1,4 +1,6 @@
 {
   "nativeForward": true,
-  "nativeBodyCheck": false
+  "nativeBodyCheck": false,
+  "injectSystemPrompt": false,
+  "injectTools": false
 }
