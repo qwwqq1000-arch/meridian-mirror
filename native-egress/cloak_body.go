@@ -2,15 +2,19 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // ErrCCBodyConflict signals that a CC-shaped body had parameter conflicts
@@ -59,22 +63,71 @@ func deriveUserID(account, configDir, sessionID string) string {
 	accountUUID := readAccountUUID(configDir)
 	if accountUUID == "" {
 		// Fallback only if the real uuid is not yet populated: derive from account,
-		// but keep it distinct from device_id.
+		// but keep it distinct from device_id. Real CC's account_uuid is a valid
+		// UUIDv4, so format ours as one too (not raw hash bytes).
 		h := sha256.Sum256([]byte("meridian-acct:" + account))
-		accountUUID = fmt.Sprintf("%x-%x-%x-%x-%x", h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
+		accountUUID = uuidV4FromBytes(h[:])
 	}
 	dh := sha256.Sum256([]byte("meridian-device:" + machineSeed()))
 	deviceID := fmt.Sprintf("%x", dh)
 	return `{"device_id":"` + deviceID + `","account_uuid":"` + accountUUID + `","session_id":"` + sessionID + `"}`
 }
 
-// machineSeed returns a stable per-container seed for device_id (hostname is
-// stable within a container's lifetime; real CC's device_id is likewise stable).
+// deviceSeedPath is the machine-level persisted device seed. It lives in the
+// meridian config volume so device_id stays STABLE across container recreates
+// (os.Hostname() returns the container id, which changes on every recreate)
+// while being UNIQUE per machine and UNCORRELATED across the fleet (a random
+// value, not derived from any shared/patterned input like hostname). Exposed as
+// a var so tests can point it at a temp file.
+var deviceSeedPath = "/home/claude/.config/meridian/.device_seed"
+
+var (
+	deviceSeedOnce sync.Once
+	deviceSeedVal  string
+)
+
+// machineSeed returns a stable, unique, per-machine seed for device_id. It
+// reads (or creates, on first use) a persisted random seed in the config
+// volume, so device_id survives recreates and never collides across the fleet.
 func machineSeed() string {
+	deviceSeedOnce.Do(func() { deviceSeedVal = loadOrCreateDeviceSeed() })
+	return deviceSeedVal
+}
+
+// loadOrCreateDeviceSeed reads the persisted seed, generating and persisting a
+// random one on first use. Falls back to a fresh random value (unique but not
+// persisted) if the volume is unwritable, and to os.Hostname() only if the RNG
+// itself fails — so device_id is always at least unique per machine.
+func loadOrCreateDeviceSeed() string {
+	if b, err := os.ReadFile(deviceSeedPath); err == nil {
+		if s := strings.TrimSpace(string(b)); s != "" {
+			return s
+		}
+	}
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err == nil {
+		seed := hex.EncodeToString(buf)
+		if os.MkdirAll(filepath.Dir(deviceSeedPath), 0o755) == nil {
+			_ = os.WriteFile(deviceSeedPath, []byte(seed), 0o600)
+		}
+		return seed // stable within this process even if the write failed
+	}
 	if h, err := os.Hostname(); err == nil && h != "" {
 		return h
 	}
 	return "meridian-node"
+}
+
+// uuidV4FromBytes formats 16 bytes as a canonical UUIDv4 string, forcing the
+// version nibble to 4 and the variant nibble to 8-b. Real CC's session_id and
+// account_uuid are valid UUIDv4s; raw hash bytes formatted as 8-4-4-4-12 are
+// NOT (their version/variant bits are random), which is a detectable tell.
+func uuidV4FromBytes(b []byte) string {
+	var u [16]byte
+	copy(u[:], b)
+	u[6] = (u[6] & 0x0f) | 0x40 // version 4
+	u[8] = (u[8] & 0x3f) | 0x80 // variant 10xx
+	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])
 }
 
 func CloakBody(raw []byte, userID string) ([]byte, error) {

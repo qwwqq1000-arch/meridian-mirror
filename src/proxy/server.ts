@@ -1028,6 +1028,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 profileSessionId ??
                 resumeSessionId ??
                 getConversationFingerprint(Array.isArray(body.messages) ? body.messages : [], profileScopedCwd),
+              // injectSystemPrompt defaults ON (main CC harness prompt ~7K,
+              // cached) so the model behaves like CC; injectTools defaults OFF
+              // so the ~26K CC tool set stays out and the user's own tools pass
+              // through. Both flippable in the web settings page.
+              injectSystemPrompt: getNativeSetting("injectSystemPrompt") !== false,
+              injectTools: getNativeSetting("injectTools") === true,
             })
             if (r.degraded) {
               // Only a genuine sidecar-unreachable failure trips the breaker.
@@ -2759,6 +2765,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     return c.json({
       nativeForward: getSetting("nativeForward") !== false,
       nativeBodyCheck: getSetting("nativeBodyCheck") === true,
+      injectSystemPrompt: getSetting("injectSystemPrompt") !== false,
+      injectTools: getSetting("injectTools") === true,
     })
   })
   app.patch("/settings/api/native", async (c) => {
@@ -2784,6 +2792,18 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         return c.json({ error: "nativeBodyCheck must be a boolean" }, 400)
       }
       setSetting("nativeBodyCheck", input.nativeBodyCheck)
+    }
+    if ("injectSystemPrompt" in input) {
+      if (typeof input.injectSystemPrompt !== "boolean") {
+        return c.json({ error: "injectSystemPrompt must be a boolean" }, 400)
+      }
+      setSetting("injectSystemPrompt", input.injectSystemPrompt)
+    }
+    if ("injectTools" in input) {
+      if (typeof input.injectTools !== "boolean") {
+        return c.json({ error: "injectTools must be a boolean" }, 400)
+      }
+      setSetting("injectTools", input.injectTools)
     }
     return c.json({ ok: true })
   })

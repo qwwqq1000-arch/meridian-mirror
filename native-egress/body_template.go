@@ -139,7 +139,12 @@ func (c *BodyTemplateCache) LearnFromCC(rawBody []byte, fpVersion, fpBetas, fpNo
 // model/messages/tool_choice from the user, base tools always present plus only
 // CC-recognized user tools, non-CC top-level fields stripped, and a fixed CC key
 // order. Values verified against 20 golden captures. No cc_prev_req.
-func MergeUserRequest(userBody []byte, tmpl *BodyTemplate, userID string) ([]byte, error) {
+//
+// injectSystemPrompt / injectTools are the identity-mode toggles: when both are
+// false the request carries only the cheap identity (billing + identity system
+// blocks) and the user's OWN tools — NOT the ~33K CC main-prompt + 28 base
+// tools. When true, the full captured envelope is spliced in (byte-perfect).
+func MergeUserRequest(userBody []byte, tmpl *BodyTemplate, userID string, injectSystemPrompt, injectTools bool) ([]byte, error) {
 	// Decode only the top level into raw fields so every pass-through value keeps
 	// its original bytes (and thus real CC / client insertion-order keys).
 	var user map[string]json.RawMessage
@@ -182,10 +187,12 @@ func MergeUserRequest(userBody []byte, tmpl *BodyTemplate, userID string) ([]byt
 	}
 	emit("messages", msgsVal)
 
-	// ① template-fixed (spliced from the capture, byte-perfect key order)
-	emit("system", buildSystemBytes(tmpl))
-	// ④ tools: base set + only CC-recognized user tools
-	emit("tools", buildToolsBytes(tmpl, user["tools"]))
+	// ① template-fixed (spliced from the capture, byte-perfect key order).
+	// injectSystemPrompt=false drops the main harness prompt (keeps identity).
+	emit("system", buildSystemBytes(tmpl, injectSystemPrompt))
+	// ④ tools: base set + CC-recognized user tools (injectTools=true), or just
+	// the user's own tools passed through verbatim (injectTools=false).
+	emit("tools", buildToolsBytes(tmpl, user["tools"], injectTools))
 	// ① metadata.user_id
 	meta := append([]byte(`{"user_id":`), jsonStringBytes(userID)...)
 	meta = append(meta, '}')

@@ -25,20 +25,53 @@ describe("GET/PATCH /settings/api/native", () => {
     // Reset to safe defaults before each test
     setSetting("nativeForward", true)
     setSetting("nativeBodyCheck", false)
+    setSetting("injectSystemPrompt", false)
+    setSetting("injectTools", false)
   })
 
   afterEach(() => {
     setSetting("nativeForward", true)
     setSetting("nativeBodyCheck", false)
+    setSetting("injectSystemPrompt", false)
+    setSetting("injectTools", false)
   })
 
   it("GET returns defaults when settings are at default", async () => {
     const app = makeApp()
     const res = await app.fetch(new Request("http://localhost/settings/api/native"))
     expect(res.status).toBe(200)
-    const body = await res.json() as { nativeForward: boolean; nativeBodyCheck: boolean }
+    const body = await res.json() as { nativeForward: boolean; nativeBodyCheck: boolean; injectSystemPrompt: boolean; injectTools: boolean }
     expect(body.nativeForward).toBe(true)
     expect(body.nativeBodyCheck).toBe(false)
+    // Injection toggles default OFF — identity-only, no ~33K envelope.
+    expect(body.injectSystemPrompt).toBe(false)
+    expect(body.injectTools).toBe(false)
+  })
+
+  it("PATCH injectSystemPrompt/injectTools=true persists and GET reflects it", async () => {
+    const app = makeApp()
+    const patch = await app.fetch(new Request("http://localhost/settings/api/native", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ injectSystemPrompt: true, injectTools: true }),
+    }))
+    expect(patch.status).toBe(200)
+    const get = await app.fetch(new Request("http://localhost/settings/api/native"))
+    const body = await get.json() as { injectSystemPrompt: boolean; injectTools: boolean }
+    expect(body.injectSystemPrompt).toBe(true)
+    expect(body.injectTools).toBe(true)
+  })
+
+  it("PATCH injectSystemPrompt with non-boolean returns 400", async () => {
+    const app = makeApp()
+    const res = await app.fetch(new Request("http://localhost/settings/api/native", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ injectSystemPrompt: "yes" }),
+    }))
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toContain("injectSystemPrompt")
   })
 
   it("PATCH nativeForward=true persists and GET reflects it", async () => {

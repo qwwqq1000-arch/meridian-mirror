@@ -152,7 +152,7 @@ const ADAPTER_LABELS = {
 };
 
 let currentConfig = {};
-let globalNative = { nativeForward: true, nativeBodyCheck: false };
+let globalNative = { nativeForward: true, nativeBodyCheck: false, injectSystemPrompt: false, injectTools: false };
 
 async function loadGlobalNative() {
   const res = await fetch('/settings/api/native');
@@ -210,6 +210,22 @@ function renderGlobalNativeSection() {
         '</div>' +
         '<label class="toggle"><input type="checkbox" id="global-nativeBodyCheck" ' + (globalNative.nativeBodyCheck ? 'checked' : '') +
         ' onchange="saveGlobalNative(\\'nativeBodyCheck\\', this.checked)"><span class="toggle-track"></span></label>' +
+      '</div>' +
+      '<div class="feature-row">' +
+        '<div class="feature-info">' +
+          '<span class="feature-label">Inject CC System Prompt</span>' +
+          '<span class="feature-desc">Add the full Claude Code main system prompt (~7K tokens). OFF = cheap identity blocks only, so customer usage isn\\'t inflated by the ~33K envelope. Disguise vs cost.</span>' +
+        '</div>' +
+        '<label class="toggle"><input type="checkbox" id="global-injectSystemPrompt" ' + (globalNative.injectSystemPrompt ? 'checked' : '') +
+        ' onchange="saveGlobalNative(\\'injectSystemPrompt\\', this.checked)"><span class="toggle-track"></span></label>' +
+      '</div>' +
+      '<div class="feature-row">' +
+        '<div class="feature-info">' +
+          '<span class="feature-label">Inject CC Base Tools</span>' +
+          '<span class="feature-desc">Add the Claude Code 28 base tools (~26K tokens). OFF = pass the user\\'s OWN tools through verbatim (not the CC 28, not empty).</span>' +
+        '</div>' +
+        '<label class="toggle"><input type="checkbox" id="global-injectTools" ' + (globalNative.injectTools ? 'checked' : '') +
+        ' onchange="saveGlobalNative(\\'injectTools\\', this.checked)"><span class="toggle-track"></span></label>' +
       '</div>' +
     '</div>';
   container.insertBefore(card, container.firstChild);

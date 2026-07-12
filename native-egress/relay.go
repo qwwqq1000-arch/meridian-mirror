@@ -31,6 +31,11 @@ func relayHandler(d RelayDeps) http.HandlerFunc {
 		account := r.Header.Get("X-Native-Account")
 		stream := r.Header.Get("X-Native-Stream") == "1"
 		clientBeta := r.Header.Get("X-Native-Anthropic-Beta")
+		// Identity-mode toggles (default OFF when the header is absent): only
+		// inject the ~33K CC main system prompt / 28 base tools when the Node
+		// layer explicitly opts in. Off = cheap identity + user's own tools.
+		injectSystemPrompt := r.Header.Get("X-Native-Inject-System-Prompt") == "1"
+		injectTools := r.Header.Get("X-Native-Inject-Tools") == "1"
 		// One session id per conversation, used for BOTH the header and metadata
 		// (real CC keeps them equal and rotates per conversation).
 		convKey := r.Header.Get("X-Native-Session-Key")
@@ -54,7 +59,7 @@ func relayHandler(d RelayDeps) http.HandlerFunc {
 		if t := d.BodyTemplate.Get(); t != nil {
 			tmpl = t
 		}
-		cloaked, err = MergeUserRequest(rawBody, tmpl, deriveUserID(account, configDir, sessionID))
+		cloaked, err = MergeUserRequest(rawBody, tmpl, deriveUserID(account, configDir, sessionID), injectSystemPrompt, injectTools)
 		if err != nil {
 			degrade(w, "merge_error")
 			return

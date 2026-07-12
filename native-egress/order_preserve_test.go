@@ -27,7 +27,7 @@ func captureTmpl() *BodyTemplate {
 const uid = `{"device_id":"d","account_uuid":"a","session_id":"s"}`
 
 func merge(t *testing.T, in string, tmpl *BodyTemplate) []byte {
-	out, err := MergeUserRequest([]byte(in), tmpl, uid)
+	out, err := MergeUserRequest([]byte(in), tmpl, uid, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}

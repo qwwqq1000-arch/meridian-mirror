@@ -22,7 +22,7 @@ func conversationSessionID(account, convKey string) string {
 		convKey = "default"
 	}
 	h := sha256.Sum256([]byte("meridian-session:" + account + ":" + convKey))
-	return fmt.Sprintf("%x-%x-%x-%x-%x", h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
+	return uuidV4FromBytes(h[:])
 }
 
 // sessionStore provides stable per-account session IDs (generated once, reused).
