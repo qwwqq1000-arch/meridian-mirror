@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.45.0](https://github.com/qwwqq1000-arch/meridian-mirror/compare/meridian-v1.44.0...meridian-v1.45.0) (2026-07-12)
+
+
+### Features
+
+* **native-egress:** capture full real request (headers+body) via dump server; keep accept-encoding ([579a0a9](https://github.com/qwwqq1000-arch/meridian-mirror/commit/579a0a95109c7b28fba1ed8155261db18730c775))
+* **native-egress:** decode gzip/deflate/br/zstd responses (accept-encoding now advertised) ([679b1be](https://github.com/qwwqq1000-arch/meridian-mirror/commit/679b1beaac389a55034bc9ad1626898a34efd87e))
+* **native-egress:** reconcile body against capture — base tools, model-forced fields, strip non-CC, fixed key order ([fa17ae1](https://github.com/qwwqq1000-arch/meridian-mirror/commit/fa17ae1af365ba7e24fe749be0dcce008ca2a4b0))
+* toggleable CC envelope injection (default identity-only) ([#1](https://github.com/qwwqq1000-arch/meridian-mirror/issues/1)) ([893cfa4](https://github.com/qwwqq1000-arch/meridian-mirror/commit/893cfa44f7661fd10e3389acd161ae2702078fd2))
+
+
+### Bug Fixes
+
+* **native-egress:** decompress upstream error body before forwarding (we advertise gzip so errors are gzipped too; was forwarding gzip bytes as application/json — garbled client errors + broke thinking-signature retry detection) ([2a86cc6](https://github.com/qwwqq1000-arch/meridian-mirror/commit/2a86cc674e23fedc2cbe0828a77875c1a06b90af))
+* **native-egress:** fold user system into messages (keep 3 CC system blocks, preserve agent instructions) ([013107a](https://github.com/qwwqq1000-arch/meridian-mirror/commit/013107af82dfc2316b976738ef2eba011de53c25))
+* **native-egress:** metadata uses real account_uuid, device_id != account_uuid, threaded session_id ([a11a019](https://github.com/qwwqq1000-arch/meridian-mirror/commit/a11a01939b7612905d3feec60d0db5bfd8c4dc44))
+* **native-egress:** never modify assistant turns (preserve thinking blocks) — strip only user messages, fixes 'Invalid signature in thinking block' 400 ([eb42186](https://github.com/qwwqq1000-arch/meridian-mirror/commit/eb42186bda9747b656a9d5d346803acb93ea8240))
+* **native-egress:** never re-capture fingerprint on the request path — reuse warmup-captured fp regardless of TTL. Fixes request hangs, relay=degrade:fetch failed, and silent fallback to stale builtin 2.1.187 fp (wrong headers: x-client-request-id present, x-stainless-* missing) after 10min uptime ([5ab46fe](https://github.com/qwwqq1000-arch/meridian-mirror/commit/5ab46fe42f74ec19022934e8fc529a432ee9c713))
+* **native-egress:** normalize all message wrappers to role-first (was leaking opencode's content,role order on assistant/unchanged turns; content bytes untouched so thinking signatures stay intact) ([a12ab35](https://github.com/qwwqq1000-arch/meridian-mirror/commit/a12ab352851d86b94d35c6a878335ffcf1a8140a))
+* **native-egress:** omit tool_choice for the auto default — real CC never sends tool_choice (absent in captures with tools); opencode's {type:auto} was leaking. Keep explicit any/none/tool forcing ([e7b63a3](https://github.com/qwwqq1000-arch/meridian-mirror/commit/e7b63a3d6909524950e36a613db2b219a2b1f047))
+* **native-egress:** preserve real-CC byte order in request serialization ([e3ad50c](https://github.com/qwwqq1000-arch/meridian-mirror/commit/e3ad50c0e97e2bf3e145bb69266bf8c49aed268e))
+* **native-egress:** recognize Agent-SDK identity so real 2.1.198 body template is stored (was falling back to builtin); LearnFromCC returns bool for honest warmup log ([7e73512](https://github.com/qwwqq1000-arch/meridian-mirror/commit/7e7351287212035e8aef54c075e23738740cc223))
+* **native-egress:** replay captured headers; drop self-injected x-client-request-id; keep accept-encoding ([d0449cb](https://github.com/qwwqq1000-arch/meridian-mirror/commit/d0449cb9592f0df33e0fb804f153ce4b59e114ed))
+* **native-egress:** retry once on empty upstream SSE stream (2xx then no message_start) + surface real scanner error instead of masking as unexpected EOF ([328ff98](https://github.com/qwwqq1000-arch/meridian-mirror/commit/328ff98aba043ec7782020793c66f8294793b95d))
+* **native-egress:** single per-conversation session id shared by header and metadata ([dafd9ea](https://github.com/qwwqq1000-arch/meridian-mirror/commit/dafd9eae913f9d7b32be2748cb64b57dc0431414))
+* **server:** pass per-conversation session key to native-egress so session_id rotates per conversation (was one eternal session_id per account — a proxy tell); prefer client session id, then lineage id, then conversation fingerprint ([c3084b2](https://github.com/qwwqq1000-arch/meridian-mirror/commit/c3084b22efdb332122f27224e1e6c83f4caa932d))
+
 ## [fork] native-egress 修复与增强 (2026-06-24)
 
 以下为 fork 分支（new-meridian）针对 native-egress sidecar 的修复，不在上游版本号体系内。
